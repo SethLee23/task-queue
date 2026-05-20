@@ -3,7 +3,8 @@
 
 const path = require('node:path');
 const { readRows, SHEET_IN_PROGRESS } = require('../lib/workbook.cjs');
-const { STATES, normalizePriority } = require('../lib/states.cjs');
+const { STATES } = require('../lib/states.cjs');
+const { sortByPriorityAndCtime } = require('../lib/sort.cjs');
 
 /**
  * 从"进行中" sheet 取最高优先级 + 最早创建时间的待办，输出 JSON 到 stdout。
@@ -15,11 +16,7 @@ module.exports = async function next(projectRoot, _args) {
   const xlsxPath = path.join(projectRoot, '.tasks', 'tasks.xlsx');
   const rows = await readRows(xlsxPath, SHEET_IN_PROGRESS);
   const todos = rows.filter(r => r.status === STATES.TODO);
-  todos.sort((a, b) => {
-    const dp = normalizePriority(a.priority) - normalizePriority(b.priority);
-    if (dp !== 0) return dp;
-    return (a.ctime || '').localeCompare(b.ctime || '');
-  });
+  sortByPriorityAndCtime(todos);
   if (todos.length === 0) {
     process.stdout.write('null\n');
     return;

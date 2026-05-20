@@ -2,26 +2,12 @@ const { test, after } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const os = require('node:os');
-const { createBlankWorkbook, withWorkbook, readRows, SHEET_IN_PROGRESS } = require('../lib/workbook.cjs');
+const { readRows, SHEET_IN_PROGRESS } = require('../lib/workbook.cjs');
+const { createTmpProjectFactory } = require('./_helpers.cjs');
 const claimCmd = require('../commands/claim.cjs');
 
-const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'task-queue-claim-'));
+const { tmpDir, setupProject } = createTmpProjectFactory('task-queue-claim-');
 after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
-
-async function setupProject(rows) {
-  const proj = fs.mkdtempSync(path.join(tmpDir, 'proj-'));
-  fs.mkdirSync(path.join(proj, '.tasks'));
-  const xlsx = path.join(proj, '.tasks', 'tasks.xlsx');
-  await createBlankWorkbook(xlsx);
-  if (rows.length > 0) {
-    await withWorkbook(xlsx, async wb => {
-      const ws = wb.getWorksheet(SHEET_IN_PROGRESS);
-      rows.forEach(r => ws.addRow(r));
-    });
-  }
-  return proj;
-}
 
 test('claim 把状态从待办改为进行中', async () => {
   const proj = await setupProject([
@@ -57,4 +43,9 @@ test('claim 非待办状态抛错', async () => {
     { id: 1, desc: 'a', scope: 'web', priority: '高', status: '已完成-待review', note: '', question: '', risk: 'x', ctime: '', ftime: '' },
   ]);
   await assert.rejects(() => claimCmd(proj, ['1']), /非法转换|状态/);
+});
+
+test('claim 缺 id 参数抛错', async () => {
+  const proj = await setupProject([]);
+  await assert.rejects(() => claimCmd(proj, []), /id 参数/);
 });

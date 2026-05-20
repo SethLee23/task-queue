@@ -1,36 +1,11 @@
 const { test, after } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const path = require('node:path');
-const os = require('node:os');
-const { createBlankWorkbook, withWorkbook, SHEET_IN_PROGRESS } = require('../lib/workbook.cjs');
+const { createTmpProjectFactory, captureStdout } = require('./_helpers.cjs');
 const nextCmd = require('../commands/next.cjs');
 
-const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'task-queue-next-'));
+const { tmpDir, setupProject } = createTmpProjectFactory('task-queue-next-');
 after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
-
-async function setupProject(rows) {
-  const proj = fs.mkdtempSync(path.join(tmpDir, 'proj-'));
-  fs.mkdirSync(path.join(proj, '.tasks'));
-  const xlsx = path.join(proj, '.tasks', 'tasks.xlsx');
-  await createBlankWorkbook(xlsx);
-  if (rows.length > 0) {
-    await withWorkbook(xlsx, async wb => {
-      const ws = wb.getWorksheet(SHEET_IN_PROGRESS);
-      rows.forEach(r => ws.addRow(r));
-    });
-  }
-  return proj;
-}
-
-function captureStdout(fn) {
-  const chunks = [];
-  const origWrite = process.stdout.write.bind(process.stdout);
-  process.stdout.write = (chunk) => { chunks.push(chunk); return true; };
-  return Promise.resolve(fn()).finally(() => {
-    process.stdout.write = origWrite;
-  }).then(() => chunks.join(''));
-}
 
 test('next 队列空输出 null', async () => {
   const proj = await setupProject([]);

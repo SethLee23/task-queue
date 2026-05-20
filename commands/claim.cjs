@@ -5,7 +5,8 @@ const path = require('node:path');
 const {
   readRows, withWorkbook, COLUMNS, SHEET_IN_PROGRESS,
 } = require('../lib/workbook.cjs');
-const { STATES, canTransition, normalizePriority } = require('../lib/states.cjs');
+const { STATES, canTransition } = require('../lib/states.cjs');
+const { sortByPriorityAndCtime } = require('../lib/sort.cjs');
 
 /**
  * 把 COLUMNS 中指定 key 映射为 1-based 列号。
@@ -36,11 +37,7 @@ module.exports = async function claim(projectRoot, args) {
 
   if (idArg === 'auto') {
     const todos = rows.filter(r => r.status === STATES.TODO);
-    todos.sort((a, b) => {
-      const dp = normalizePriority(a.priority) - normalizePriority(b.priority);
-      if (dp !== 0) return dp;
-      return (a.ctime || '').localeCompare(b.ctime || '');
-    });
+    sortByPriorityAndCtime(todos);
     if (todos.length === 0) throw new Error('队列里没有待办任务');
     targetRow = todos[0];
   } else {
