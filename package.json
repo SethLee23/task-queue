@@ -1,0 +1,16 @@
+{
+  "name": "task-queue-skill",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Task queue automation skill - read Excel tasks, execute, commit, notify",
+  "type": "commonjs",
+  "scripts": {
+    "test": "node --test tests/"
+  },
+  "dependencies": {
+    "exceljs": "^4.4.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

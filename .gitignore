@@ -1,0 +1,4 @@
+node_modules/
+tests/fixtures/*.xlsx
+tests/fixtures/tmp-*
+.DS_Store
