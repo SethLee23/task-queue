@@ -56,7 +56,19 @@ node ~/.claude/skills/task-queue/tasks.cjs detect <project-root>
 node ~/.claude/skills/task-queue/tasks.cjs init-write <project-root> '<answers-json>'
 ```
 
-### Step 4: 收尾
+### Step 4: 提交配置入 git（关键）
+
+为避免首次 `done` 把 `.tasks/` 整个目录一起 commit（`.gitignore` 在 init 期间是 untracked，`git add` 时会被一并加入），init-write 一旦成功，立刻显式提交 `.gitignore` 和 `.tasks/project.config.js`：
+
+```bash
+cd <project-root>
+git add .gitignore .tasks/project.config.js
+git commit -m "task-queue: 接入任务队列配置"
+```
+
+注意：**必须显式列文件**，禁止 `git add -A` / `git add .` —— 用户工作区可能有 in-progress 改动，不能误带入。
+
+### Step 5: 收尾
 
 告诉用户 init 完成，提醒：
 - 任务表在 `<root>/.tasks/tasks.xlsx`
@@ -85,26 +97,24 @@ node ~/.claude/skills/task-queue/tasks.cjs init-write <project-root> '<answers-j
 
 用户说"加一条任务 xxx"，你直接：
 
-1. 拆解用户描述 → 推断 scope（看任务描述里提到的目录关键字）
-2. 推断优先级（用户语气："紧急/急" → 高，普通 → 中，"有空再做" → 低）
-3. 调 `tasks.cjs add-row`（注：当前版本没有这个命令，直接用 workbook 写或者让用户自己加；v2 可补）
-4. 推荐：先打开 `tasks.xlsx` 让用户自己加，更清晰
+1. 拆解用户描述 → 推断 scope（看任务描述里提到的目录关键字；match `web/` → web，match `core/` → core）
+2. 推断优先级（用户语气："紧急/急/立刻" → 高，普通 → 中，"有空再做" → 低）
+3. 调 `add-row`：
 
-或者跑：
 ```bash
-node -e "
-const {createBlankWorkbook,withWorkbook,SHEET_IN_PROGRESS} = require('/Users/seth/.claude/skills/task-queue/lib/workbook.cjs');
-const fs = require('fs'); const p = '<root>/.tasks/tasks.xlsx';
-if (!fs.existsSync(p)) { console.error('tasks.xlsx 不存在，请先 init'); process.exit(1); }
-withWorkbook(p, async wb => {
-  wb.getWorksheet(SHEET_IN_PROGRESS).addRow({
-    id: '', desc: '<用户描述>', scope: '<推断>', priority: '<推断>',
-    status: '待办', note: '', question: '', risk: '',
-    ctime: new Date().toISOString(), ftime: ''
-  });
-}).then(() => console.log('added'));
-"
+node ~/.claude/skills/task-queue/tasks.cjs add-row <project-root> "<desc>" <scope> [priority] [note]
 ```
+
+例：
+
+```bash
+node ~/.claude/skills/task-queue/tasks.cjs add-row /path/proj "登录按钮没居中" web 中
+```
+
+- `priority` 不传默认 `中`；只接受 `高`/`中`/`低`
+- `scope` 必须在 project.config.js 已知 scopes 中，否则命令报错
+- id 留空，由后续 `claim` 时自动分配为最大 id + 1
+- 不要让用户直接打开 Excel 加 —— 走命令一致性更好
 
 ## 子命令一览（速查）
 
@@ -112,6 +122,7 @@ withWorkbook(p, async wb => {
 |---|---|
 | `detect <root>` | 静态分析，输出 JSON |
 | `init-write <root> <answers-json>` | 落盘 .tasks/ 目录和 project.config.js |
+| `add-row <root> <desc> <scope> [priority] [note]` | 追加一条待办任务（id 留空，待 claim 时自动分配） |
 | `next <root>` | 输出下一条待办（按优先级排序） |
 | `claim <root> <id\|auto>` | 状态置进行中 |
 | `done <root> <id>` | 标完成，根据 config 决定 auto commit |
