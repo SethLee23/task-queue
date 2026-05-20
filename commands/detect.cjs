@@ -4,33 +4,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
-
-/**
- * 内置模块英文名 → 中文名映射字典（可扩展）。
- * 未命中的目录名原样保留。
- * @type {Record<string, string>}
- */
-const MODULE_DICT = {
-  Router:      '路由管理',
-  Service:     '服务管理 L7',
-  Service4:    '服务管理 L4',
-  Faas:        'FaaS 管理',
-  Plugin:      '插件管理',
-  Policy:      '策略管理',
-  Tls:         'TLS 管理',
-  Settings:    '全局设置',
-  Global:      '全局设置',
-  Context:     '上下文管理',
-  Auth:        '认证管理',
-  Log:         '日志管理',
-  Monitor:     '监控管理',
-  Cluster:     '集群管理',
-  Dashboard:   '监控面板',
-  Group:       '分组管理',
-  User:        '用户管理',
-  Role:        '角色管理',
-  System:      '系统管理',
-};
+const { MODULE_DICT } = require('../lib/module-dict.cjs');
 
 /**
  * 宽容读文件，任何错误返回 null。
