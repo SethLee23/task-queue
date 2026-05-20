@@ -213,3 +213,32 @@ test('done pre-commit hook 失败时转 review', async () => {
   assert.equal(inProg[0].status, '已完成-待review');
   assert.match(inProg[0].risk, /commit 阶段失败|hookfail|hook/i);
 });
+
+test('done desc 含 $1 时 changelog 写入字面字符串不被替换', async () => {
+  const proj = await setupProject({
+    scope: 'web',
+    autoCommit: true,
+    initialFiles: { 'src/cfg.ts': 'old' },
+    rows: [
+      {
+        id: 1,
+        desc: '改 $1 配置',
+        scope: 'web',
+        priority: '高',
+        status: '进行中',
+        note: '',
+        question: '',
+        risk: '',
+        ctime: '2026-05-20T10:00:00Z',
+        ftime: '',
+      },
+    ],
+  });
+  fs.writeFileSync(path.join(proj, 'src/cfg.ts'), 'new');
+  await doneCmd(proj, ['1']);
+  const readme = fs.readFileSync(path.join(proj, 'README.md'), 'utf8');
+  assert.ok(
+    readme.includes('【路由管理】改 $1 配置；'),
+    `README.md 应包含字面 $1，实际内容：${readme}`,
+  );
+});

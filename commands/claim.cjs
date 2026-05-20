@@ -3,19 +3,10 @@
 
 const path = require('node:path');
 const {
-  readRows, withWorkbook, COLUMNS, SHEET_IN_PROGRESS,
+  readRows, withWorkbook, COLUMNS, SHEET_IN_PROGRESS, colIndex,
 } = require('../lib/workbook.cjs');
 const { STATES, canTransition } = require('../lib/states.cjs');
 const { sortByPriorityAndCtime } = require('../lib/sort.cjs');
-
-/**
- * 把 COLUMNS 中指定 key 映射为 1-based 列号。
- * @param {string} key
- * @returns {number}
- */
-function colIndex(key) {
-  return COLUMNS.findIndex(c => c.key === key) + 1;
-}
 
 /**
  * 把指定 id 的任务状态改为"进行中"。

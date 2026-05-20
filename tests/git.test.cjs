@@ -58,3 +58,16 @@ test('gitDiffStat 返回 stat 输出', () => {
   const stat = gitDiffStat(repo);
   assert.match(stat, /README\.md/);
 });
+
+test('gitStatus 重命名条目只返回新路径', () => {
+  const repo = setupRepo();
+  // commit 一个文件进去
+  fs.writeFileSync(path.join(repo, 'old.txt'), 'content');
+  execSync('git add old.txt', { cwd: repo });
+  execSync('git commit -m "add old.txt"', { cwd: repo });
+  // 用 git mv 重命名
+  execSync('git mv old.txt new.txt', { cwd: repo });
+  const changed = gitStatus(repo);
+  // 应该只有 new.txt，不含 ' -> '
+  assert.deepEqual(changed, ['new.txt']);
+});

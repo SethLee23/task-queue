@@ -3,21 +3,12 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const {
-  readRows, withWorkbook, COLUMNS, SHEET_IN_PROGRESS, SHEET_ARCHIVED,
+  readRows, withWorkbook, COLUMNS, SHEET_IN_PROGRESS, SHEET_ARCHIVED, colIndex,
 } = require('../lib/workbook.cjs');
 const { STATES } = require('../lib/states.cjs');
 const { loadProjectConfig } = require('../lib/config.cjs');
 const { Logger } = require('../lib/logger.cjs');
 const { gitStatus, gitAdd, gitCommit, gitLogToday } = require('../lib/git.cjs');
-
-/**
- * 返回 COLUMNS 中指定 key 的 1-based 列号。
- * @param {string} key
- * @returns {number}
- */
-function colIndex(key) {
-  return COLUMNS.findIndex(c => c.key === key) + 1;
-}
 
 /**
  * 默认版本号 bump 策略：patch + 1，保留后缀（如 -beta）。
@@ -151,7 +142,8 @@ module.exports = async function done(projectRoot, args) {
 
     let version;
     const todayLog = gitLogToday(projectRoot);
-    const versionUsedToday = todayLog.includes(currentVersion);
+    const escVer = currentVersion.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const versionUsedToday = new RegExp(`(?<![\\w.\\-])${escVer}(?![\\w.\\-])`).test(todayLog);
     if (cfg.sameDayShareVersion && versionUsedToday) {
       version = currentVersion;
     } else {
@@ -173,7 +165,7 @@ module.exports = async function done(projectRoot, args) {
       const escapedHeader = versionHeader.replace(/\./g, '\\.');
       newChangelog = changelogContent.replace(
         new RegExp(`(${escapedHeader}[^\\n]*\\n)`),
-        `$1${entryLine}\n`,
+        (_, header) => `${header}${entryLine}\n`,
       );
     } else {
       newChangelog = `${versionHeader}\n${entryLine}\n\n${changelogContent}`;
