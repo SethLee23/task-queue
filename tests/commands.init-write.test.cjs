@@ -170,3 +170,42 @@ test('inferModule 正确性：web/src/view/Router/ 命中 "路由管理"', async
   const result4 = config.inferModule(['core/app.ts'], 'core');
   assert.equal(result4, null, '未知 scope 应返回 null');
 });
+
+test('inferModule 反向字典含 Settings 和 Global 双 key（均映射"全局设置"）', async () => {
+  const proj = fs.mkdtempSync(path.join(tmpBase, 'infer-dual-key-'));
+
+  const answers = {
+    ...BASE_ANSWERS,
+    candidateModules: { web: ['全局设置', '路由管理'] },
+    commitTemplate: { web: 'T#0000 web## {version}\n\n【{module}】{desc}；' },
+  };
+
+  await capture(() => initWrite(proj, [JSON.stringify(answers)]));
+
+  const cfgPath = path.join(proj, '.tasks', 'project.config.js');
+  // 清除 require 缓存，避免同路径被之前测试缓存影响
+  delete require.cache[require.resolve(cfgPath)];
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const cfg = require(cfgPath);
+
+  // Settings 目录命中
+  assert.equal(
+    cfg.inferModule(['web/src/view/Settings/foo.tsx'], 'web'),
+    '全局设置',
+    'Settings 目录应推断为 "全局设置"',
+  );
+
+  // Global 目录命中
+  assert.equal(
+    cfg.inferModule(['web/src/view/Global/bar.tsx'], 'web'),
+    '全局设置',
+    'Global 目录应推断为 "全局设置"',
+  );
+
+  // Router 目录命中
+  assert.equal(
+    cfg.inferModule(['web/src/view/Router/x.tsx'], 'web'),
+    '路由管理',
+    'Router 目录应推断为 "路由管理"',
+  );
+});

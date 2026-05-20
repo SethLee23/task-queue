@@ -31,25 +31,29 @@ function render(tpl, vars) {
  * 使用共享 MODULE_DICT 进行反向映射，确保与 detect 命令完全一致。
  *
  * 注意：MODULE_DICT 中存在多个英文 key 映射同一中文（如 Settings/Global → 全局设置），
- * 反向后最后一个 key 优先（Global）。用户界面层不感知此细节，不影响正确性。
+ * 反向构建时一对多保留全部 key，inferModule 能匹配任一目录名。
  *
  * @param {Record<string, string[]>} candidateModules scope → 中文模块名列表
  * @returns {Record<string, Record<string, string>>} scope → { 英文目录关键字: 中文模块名 }
  */
 function buildModuleDict(candidateModules) {
-  // 构造 中文→英文 反向映射，含 MODULE_DICT 的所有条目
-  /** @type {Record<string, string>} */
-  const reverseDict = Object.fromEntries(
-    Object.entries(MODULE_DICT).map(([en, cn]) => [cn, en])
-  );
+  // 中文名 → 所有对应英文 keys（一对多反向）
+  /** @type {Record<string, string[]>} */
+  const reverseMulti = {};
+  for (const [en, cn] of Object.entries(MODULE_DICT)) {
+    if (!reverseMulti[cn]) reverseMulti[cn] = [];
+    reverseMulti[cn].push(en);
+  }
 
   /** @type {Record<string, Record<string, string>>} */
   const result = {};
   for (const [scope, modules] of Object.entries(candidateModules)) {
     result[scope] = {};
     for (const mod of modules) {
-      const key = reverseDict[mod] || mod;
-      result[scope][key] = mod;
+      const keys = reverseMulti[mod] || [mod];
+      for (const key of keys) {
+        result[scope][key] = mod;
+      }
     }
   }
   return result;
