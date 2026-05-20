@@ -5,7 +5,7 @@
   "description": "Task queue automation skill - read Excel tasks, execute, commit, notify",
   "type": "commonjs",
   "scripts": {
-    "test": "node --test tests/"
+    "test": "node --test tests/*.test.cjs"
   },
   "dependencies": {
     "exceljs": "^4.4.0"
