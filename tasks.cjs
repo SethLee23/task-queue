@@ -20,6 +20,9 @@ const KNOWN_COMMANDS = [
   'block', 'status', 'sweep', 'recover',
 ];
 
+/** 不需要 <project-root> 参数的命令集合 */
+const COMMANDS_NOT_REQUIRING_PROJECT_ROOT = new Set(['detect', 'init-write']);
+
 async function main() {
   const [, , cmd, projectRoot, ...rest] = process.argv;
 
@@ -34,7 +37,7 @@ async function main() {
     process.exit(2);
   }
 
-  if (cmd !== 'detect' && !projectRoot) {
+  if (!COMMANDS_NOT_REQUIRING_PROJECT_ROOT.has(cmd) && !projectRoot) {
     process.stderr.write(`命令 ${cmd} 需要 <project-root> 参数\n`);
     process.exit(2);
   }
