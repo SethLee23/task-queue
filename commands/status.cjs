@@ -4,6 +4,7 @@ const path = require('node:path');
 const { readRows, SHEET_IN_PROGRESS, SHEET_ARCHIVED } = require('../lib/workbook.cjs');
 const { STATES } = require('../lib/states.cjs');
 const { localDateStr } = require('../lib/datetime.cjs');
+const { readPaused } = require('../lib/paused.cjs');
 
 /**
  * 判断 ftime 是否属于今天（本地时区）。
@@ -33,6 +34,7 @@ module.exports = async function status(projectRoot, _args) {
   const archived = await readRows(xlsxPath, SHEET_ARCHIVED);
 
   const today = localDateStr();
+  const pauseReason = readPaused(projectRoot);
   const counts = {
     todo:        inProg.filter(r => r.status === STATES.TODO).length,
     in_progress: inProg.filter(r => r.status === STATES.IN_PROGRESS).length,
@@ -42,6 +44,8 @@ module.exports = async function status(projectRoot, _args) {
       if (r.status !== STATES.DONE) return false;
       return isToday(r.ftime, today);
     }).length,
+    paused:      pauseReason !== null,
+    pauseReason: pauseReason,
   };
   process.stdout.write(JSON.stringify(counts) + '\n');
 };
