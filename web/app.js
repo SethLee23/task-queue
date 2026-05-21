@@ -5,7 +5,11 @@ const state = {
   selectedSlug: null,
   detail: null,
   doneCollapsed: true,
+  collapsedCards: new Set(),
+  addModal: null,
 };
+
+const LONG_TEXT_THRESHOLD = 120;
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
@@ -15,7 +19,8 @@ function el(tag, attrs = {}, ...children) {
   for (const [k, v] of Object.entries(attrs || {})) {
     if (k === 'className') e.className = v;
     else if (k.startsWith('on')) e.addEventListener(k.slice(2).toLowerCase(), v);
-    else if (v != null) e.setAttribute(k, v);
+    else if (v === false || v == null) continue;
+    else e.setAttribute(k, v === true ? '' : v);
   }
   for (const c of children.flat()) {
     if (c == null) continue;
@@ -95,6 +100,12 @@ function renderCard(t, group) {
   if (t.risk) chips.push(el('span', { className: 'chip risk', title: t.risk }, '⚠ 风险'));
   if (t.question) chips.push(el('span', { className: 'chip question', title: t.question }, '? 疑问'));
 
+  const cardKey = `${state.selectedSlug}:${t.id}`;
+  const collapsed = state.collapsedCards.has(cardKey);
+  const extra = group === 'review' ? t.risk : group === 'blocked' ? t.question : '';
+  const totalLen = (t.desc || '').length + (extra || '').length;
+  const collapsible = totalLen > LONG_TEXT_THRESHOLD;
+
   const children = [
     el('div', { className: 'card-desc' },
       el('span', { className: 'card-id' }, `#${t.id}`),
@@ -103,9 +114,22 @@ function renderCard(t, group) {
     el('div', { className: 'card-chips' }, ...chips),
   ];
 
-  const extra = group === 'review' ? t.risk : group === 'blocked' ? t.question : '';
   if (extra) {
-    children.push(el('div', { className: 'card-extra', title: extra }, extra));
+    children.push(el('div', { className: 'card-extra' }, extra));
+  }
+
+  if (collapsible) {
+    children.push(el('div', { className: 'card-toggle' },
+      el('button', {
+        className: 'btn-link',
+        onclick: (e) => {
+          e.stopPropagation();
+          if (collapsed) state.collapsedCards.delete(cardKey);
+          else state.collapsedCards.add(cardKey);
+          renderDetail();
+        },
+      }, collapsed ? '▾ 展开' : '▴ 收起'),
+    ));
   }
 
   if (group === 'todo') {
@@ -115,7 +139,7 @@ function renderCard(t, group) {
     ));
   }
 
-  return el('div', { className: 'card' }, ...children);
+  return el('div', { className: 'card' + (collapsible && collapsed ? ' collapsed' : '') }, ...children);
 }
 
 function renderColumn(label, key, items) {
@@ -163,6 +187,13 @@ function renderDetail() {
     onclick: () => p.paused ? resumeProject() : pauseProject(),
   }, p.paused ? `resume (${p.pauseReason || '已暂停'})` : 'pause loop');
 
+  const addBtn = el('button', {
+    className: 'btn',
+    disabled: !(state.detail.scopes && state.detail.scopes.length > 0),
+    onclick: () => openAddModal(),
+    title: state.detail.scopes && state.detail.scopes.length > 0 ? '' : 'project.config.js 缺失或无 scope',
+  }, '+ 新增任务');
+
   c.appendChild(el('div', { className: 'detail-header' },
     el('div', null,
       el('div', { className: 'title-line' },
@@ -173,7 +204,7 @@ function renderDetail() {
         `${statusLabel(p)} · 心跳 ${p.lastHeartbeat ? new Date(p.lastHeartbeat).toLocaleString() : '—'} · 模型 ${p.lastModel ?? '—'}`,
       ),
     ),
-    el('div', { className: 'pause-wrap' + (p.paused ? ' paused' : '') }, pauseBtn),
+    el('div', { className: 'header-actions' }, addBtn, pauseBtn),
   ));
 
   if (p.currentTask) {
@@ -195,6 +226,107 @@ function renderDetail() {
   ));
 
   c.appendChild(renderDoneStrip(tasks.done_today));
+
+  renderAddModal();
+}
+
+function renderAddModal() {
+  const existing = document.getElementById('add-modal');
+  if (existing) existing.remove();
+  if (!state.addModal) return;
+
+  const { scopes } = state.detail || { scopes: [] };
+  const form = state.addModal;
+
+  const descInput = el('textarea', {
+    className: 'modal-input',
+    rows: 3,
+    placeholder: '任务描述（必填）',
+  });
+  descInput.value = form.desc || '';
+  descInput.addEventListener('input', e => { form.desc = e.target.value; });
+
+  const scopeSelect = el('select', { className: 'modal-input' },
+    ...scopes.map(s => el('option', { value: s, selected: s === form.scope ? '' : null }, s)),
+  );
+  scopeSelect.addEventListener('change', e => { form.scope = e.target.value; });
+
+  const prioSelect = el('select', { className: 'modal-input' },
+    ...['高', '中', '低'].map(p => el('option', { value: p, selected: p === form.priority ? '' : null }, p)),
+  );
+  prioSelect.addEventListener('change', e => { form.priority = e.target.value; });
+
+  const noteInput = el('input', {
+    className: 'modal-input',
+    type: 'text',
+    placeholder: '备注（可选）',
+  });
+  noteInput.value = form.note || '';
+  noteInput.addEventListener('input', e => { form.note = e.target.value; });
+
+  const errorBox = el('div', { className: 'modal-error', id: 'modal-error' });
+
+  const modal = el('div', { id: 'add-modal', className: 'modal-backdrop', onclick: e => {
+    if (e.target.id === 'add-modal') closeAddModal();
+  } },
+    el('div', { className: 'modal' },
+      el('div', { className: 'modal-title' }, '新增任务'),
+      el('label', { className: 'modal-label' }, '描述', descInput),
+      el('div', { className: 'modal-row' },
+        el('label', { className: 'modal-label' }, 'scope', scopeSelect),
+        el('label', { className: 'modal-label' }, '优先级', prioSelect),
+      ),
+      el('label', { className: 'modal-label' }, '备注', noteInput),
+      errorBox,
+      el('div', { className: 'modal-actions' },
+        el('button', { className: 'btn', onclick: closeAddModal }, '取消'),
+        el('button', { className: 'btn primary', onclick: submitAddRow }, '添加'),
+      ),
+    ),
+  );
+  document.body.appendChild(modal);
+  descInput.focus();
+}
+
+function openAddModal() {
+  const scopes = (state.detail && state.detail.scopes) || [];
+  state.addModal = {
+    desc: '',
+    scope: scopes[0] || '',
+    priority: '中',
+    note: '',
+  };
+  renderAddModal();
+}
+
+function closeAddModal() {
+  state.addModal = null;
+  renderAddModal();
+}
+
+async function submitAddRow() {
+  const form = state.addModal;
+  if (!form) return;
+  if (!form.desc.trim()) {
+    document.getElementById('modal-error').textContent = '描述不能为空';
+    return;
+  }
+  if (!form.scope) {
+    document.getElementById('modal-error').textContent = '请选择 scope';
+    return;
+  }
+  const r = await postAction(`/api/projects/${state.selectedSlug}/add-row`, {
+    desc: form.desc.trim(),
+    scope: form.scope,
+    priority: form.priority,
+    note: form.note.trim(),
+  });
+  if (r.ok) {
+    closeAddModal();
+    await refreshProjects();
+  } else {
+    document.getElementById('modal-error').textContent = r.body?.error || `失败 (${r.status})`;
+  }
 }
 
 async function refreshProjects() {

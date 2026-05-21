@@ -10,6 +10,8 @@ const { STATES, PRIORITY_ORDER } = require('../lib/states.cjs');
 const { readHeartbeat } = require('../lib/heartbeat.cjs');
 const { readPaused, setPaused, clearPaused } = require('../lib/paused.cjs');
 const { localDateStr } = require('../lib/datetime.cjs');
+const { loadProjectConfig } = require('../lib/config.cjs');
+const { addRowCore } = require('./add-row.cjs');
 
 const WEB_ROOT = path.join(__dirname, '..', 'web');
 
@@ -189,6 +191,38 @@ async function handleDelete(_req, res, rawSlug) {
 }
 
 /**
+ * 处理 POST /api/projects/:slug/add-row
+ * body: { desc, scope, priority?, note? }
+ * @param {http.IncomingMessage} req
+ * @param {http.ServerResponse} res
+ * @param {string} rawSlug
+ */
+async function handleAddRow(req, res, rawSlug) {
+  const slug = decodeURIComponent(rawSlug);
+  if (!SLUG_RE.test(slug)) return sendJson(res, 400, { error: 'invalid slug format' });
+
+  const entry = registryList().find(p => p.slug === slug);
+  if (!entry) return sendJson(res, 404, { error: 'project not found' });
+
+  const body = await readJsonBody(req).catch(() => null);
+  if (!body || !body.desc || !body.scope) {
+    return sendJson(res, 400, { error: 'desc 和 scope 必填' });
+  }
+
+  try {
+    const result = await addRowCore(entry.root, {
+      desc: String(body.desc),
+      scope: String(body.scope),
+      priority: body.priority ? String(body.priority) : undefined,
+      note: body.note ? String(body.note) : '',
+    });
+    sendJson(res, 200, { ok: true, row: result });
+  } catch (err) {
+    sendJson(res, 400, { error: String(err.message) });
+  }
+}
+
+/**
  * 处理 POST /api/cleanup-missing
  * 遍历注册表，把 root 不存在或 .tasks 目录缺失的条目移出注册表，
  * 不触碰任何文件系统目录内容。
@@ -344,6 +378,14 @@ function pickFields(row, fields) {
 async function buildProjectDetail(entry) {
   const project = await aggregateProject(entry);
 
+  let scopes = [];
+  try {
+    const cfg = loadProjectConfig(entry.root);
+    scopes = Object.keys(cfg.scopes || {});
+  } catch (_) {
+    // 配置缺失或解析失败时返回空数组，前端据此禁用新增按钮
+  }
+
   const xlsxPath = path.join(entry.root, '.tasks', 'tasks.xlsx');
   const today = localDateStr();
 
@@ -374,7 +416,7 @@ async function buildProjectDetail(entry) {
     }
   }
 
-  return { project, tasks: { in_progress, todo, review, blocked, done_today } };
+  return { project, scopes, tasks: { in_progress, todo, review, blocked, done_today } };
 }
 
 /**
@@ -453,6 +495,12 @@ function handle(req, res) {
   const resumeM = pathname.match(/^\/api\/projects\/([^/]+)\/resume$/);
   if (resumeM && req.method === 'POST') {
     handleResume(req, res, resumeM[1]).catch(err => sendJson(res, 500, { error: String(err.message) }));
+    return;
+  }
+
+  const addRowM = pathname.match(/^\/api\/projects\/([^/]+)\/add-row$/);
+  if (addRowM && req.method === 'POST') {
+    handleAddRow(req, res, addRowM[1]).catch(err => sendJson(res, 500, { error: String(err.message) }));
     return;
   }
 

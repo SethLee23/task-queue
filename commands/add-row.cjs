@@ -9,7 +9,7 @@ const { loadProjectConfig } = require('../lib/config.cjs');
 const VALID_PRIORITIES = new Set(PRIORITY_ORDER);
 
 /**
- * 追加一条状态为"待办"的任务到进行中 sheet。
+ * 追加一条状态为"待办"的任务到进行中 sheet 的核心实现，供 CLI 和 dashboard server 复用。
  * id 按 max+1 即时分配，ctime 自动填本地 ISO 时间戳。
  *
  * 校验：
@@ -18,15 +18,15 @@ const VALID_PRIORITIES = new Set(PRIORITY_ORDER);
  * - priority 不传默认 '中'，否则必须是 高/中/低 之一
  *
  * @param {string} projectRoot 项目根目录绝对路径
- * @param {string[]} args [desc, scope, priority?, note?]
- * @returns {Promise<void>}
+ * @param {{ desc: string, scope: string, priority?: string, note?: string }} fields
+ * @returns {Promise<{ id: number, desc: string, scope: string, priority: string, note: string, status: string, ctime: string }>}
  */
-module.exports = async function addRow(projectRoot, args) {
-  const [desc, scope, priorityArg, noteArg] = args;
+async function addRowCore(projectRoot, fields) {
+  const { desc, scope } = fields;
   if (!desc) throw new Error('add-row 需要 <desc> 参数');
   if (!scope) throw new Error('add-row 需要 <scope> 参数');
 
-  const priority = priorityArg || '中';
+  const priority = fields.priority || '中';
   if (!VALID_PRIORITIES.has(priority)) {
     throw new Error(`非法 priority: ${priority}（需为 ${PRIORITY_ORDER.join('/')} 之一）`);
   }
@@ -38,7 +38,7 @@ module.exports = async function addRow(projectRoot, args) {
     );
   }
 
-  const note = noteArg || '';
+  const note = fields.note || '';
   const ctime = new Date().toISOString();
   const xlsxPath = path.join(projectRoot, '.tasks', 'tasks.xlsx');
 
@@ -65,7 +65,23 @@ module.exports = async function addRow(projectRoot, args) {
     });
   });
 
-  process.stdout.write(JSON.stringify({
-    id, desc, scope, priority, note, status: STATES.TODO, ctime,
-  }) + '\n');
-};
+  return { id, desc, scope, priority, note, status: STATES.TODO, ctime };
+}
+
+/**
+ * CLI 入口：解析位置参数后调 addRowCore，并把结果以 JSON 行写出到 stdout。
+ *
+ * @param {string} projectRoot 项目根目录绝对路径
+ * @param {string[]} args [desc, scope, priority?, note?]
+ * @returns {Promise<void>}
+ */
+async function addRowCli(projectRoot, args) {
+  const [desc, scope, priorityArg, noteArg] = args;
+  const result = await addRowCore(projectRoot, {
+    desc, scope, priority: priorityArg, note: noteArg,
+  });
+  process.stdout.write(JSON.stringify(result) + '\n');
+}
+
+module.exports = addRowCli;
+module.exports.addRowCore = addRowCore;
