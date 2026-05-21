@@ -254,6 +254,19 @@ body {
   margin-top: 6px;
   text-align: right;
 }
+.card-link {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--border);
+}
+.btn-link.link-open {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
 .btn-link {
   background: none;
   border: none;

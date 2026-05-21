@@ -18,8 +18,8 @@ const VALID_PRIORITIES = new Set(PRIORITY_ORDER);
  * - priority 不传默认 '中'，否则必须是 高/中/低 之一
  *
  * @param {string} projectRoot 项目根目录绝对路径
- * @param {{ desc: string, scope: string, priority?: string, note?: string }} fields
- * @returns {Promise<{ id: number, desc: string, scope: string, priority: string, note: string, status: string, ctime: string }>}
+ * @param {{ desc: string, scope: string, priority?: string, note?: string, link?: string }} fields
+ * @returns {Promise<{ id: number, desc: string, scope: string, priority: string, note: string, link: string, status: string, ctime: string }>}
  */
 async function addRowCore(projectRoot, fields) {
   const { desc, scope } = fields;
@@ -39,6 +39,7 @@ async function addRowCore(projectRoot, fields) {
   }
 
   const note = fields.note || '';
+  const link = fields.link || '';
   const ctime = new Date().toISOString();
   const xlsxPath = path.join(projectRoot, '.tasks', 'tasks.xlsx');
 
@@ -62,23 +63,24 @@ async function addRowCore(projectRoot, fields) {
       risk: '',
       ctime,
       ftime: '',
+      link,
     });
   });
 
-  return { id, desc, scope, priority, note, status: STATES.TODO, ctime };
+  return { id, desc, scope, priority, note, link, status: STATES.TODO, ctime };
 }
 
 /**
  * CLI 入口：解析位置参数后调 addRowCore，并把结果以 JSON 行写出到 stdout。
  *
  * @param {string} projectRoot 项目根目录绝对路径
- * @param {string[]} args [desc, scope, priority?, note?]
+ * @param {string[]} args [desc, scope, priority?, note?, link?]
  * @returns {Promise<void>}
  */
 async function addRowCli(projectRoot, args) {
-  const [desc, scope, priorityArg, noteArg] = args;
+  const [desc, scope, priorityArg, noteArg, linkArg] = args;
   const result = await addRowCore(projectRoot, {
-    desc, scope, priority: priorityArg, note: noteArg,
+    desc, scope, priority: priorityArg, note: noteArg, link: linkArg,
   });
   process.stdout.write(JSON.stringify(result) + '\n');
 }

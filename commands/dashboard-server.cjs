@@ -4,6 +4,7 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const url = require('node:url');
+const { spawn } = require('node:child_process');
 const { list: registryList, remove: registryRemove } = require('../lib/registry.cjs');
 const { readRows, withWorkbook, SHEET_IN_PROGRESS, SHEET_ARCHIVED, colIndex } = require('../lib/workbook.cjs');
 const { STATES, PRIORITY_ORDER } = require('../lib/states.cjs');
@@ -22,7 +23,7 @@ const SLUG_RE = /^[a-z0-9-]+$/;
 const DETAIL_ROUTE_RE = /^\/api\/projects\/([^/]+)$/;
 
 /** 任务列表 pick 字段（基础） */
-const TASK_PICK_FIELDS = ['id', 'desc', 'scope', 'priority', 'ctime', 'note', 'risk', 'question'];
+const TASK_PICK_FIELDS = ['id', 'desc', 'scope', 'priority', 'ctime', 'note', 'risk', 'question', 'link'];
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -215,10 +216,36 @@ async function handleAddRow(req, res, rawSlug) {
       scope: String(body.scope),
       priority: body.priority ? String(body.priority) : undefined,
       note: body.note ? String(body.note) : '',
+      link: body.link ? String(body.link) : '',
     });
     sendJson(res, 200, { ok: true, row: result });
   } catch (err) {
     sendJson(res, 400, { error: String(err.message) });
+  }
+}
+
+/**
+ * 处理 POST /api/open
+ * body: { target: string }
+ * 用 macOS `open` 命令打开本地路径、文件或 URL。
+ * 参数通过 spawn 数组传入，避免 shell 注入；
+ * 拒绝空串、非字符串及以 "-" 开头（防止当作 open 的 flag 解析）。
+ * @param {http.IncomingMessage} req
+ * @param {http.ServerResponse} res
+ */
+async function handleOpen(req, res) {
+  const body = await readJsonBody(req).catch(() => null);
+  const target = body && typeof body.target === 'string' ? body.target.trim() : '';
+  if (!target) return sendJson(res, 400, { error: 'target 必填' });
+  if (target.startsWith('-')) return sendJson(res, 400, { error: 'target 不能以 - 开头' });
+
+  try {
+    const child = spawn('open', [target], { stdio: 'ignore', detached: true });
+    child.on('error', () => { /* ignore — 客户端已收到响应 */ });
+    child.unref();
+    sendJson(res, 200, { ok: true });
+  } catch (err) {
+    sendJson(res, 500, { error: String(err.message) });
   }
 }
 
@@ -471,6 +498,11 @@ function handle(req, res) {
 
   if (pathname === '/api/cleanup-missing' && req.method === 'POST') {
     handleCleanupMissing(req, res).catch(err => sendJson(res, 500, { error: String(err.message) }));
+    return;
+  }
+
+  if (pathname === '/api/open' && req.method === 'POST') {
+    handleOpen(req, res).catch(err => sendJson(res, 500, { error: String(err.message) }));
     return;
   }
 

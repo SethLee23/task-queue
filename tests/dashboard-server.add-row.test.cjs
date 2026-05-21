@@ -143,3 +143,25 @@ test('POST /api/projects/:slug/add-row 项目不存在 → 404', async () => {
   });
   assert.equal(res.status, 404);
 });
+
+test('POST /api/projects/:slug/add-row 写入 link 字段并能读回', async () => {
+  const proj = await mkProject();
+  const entry = registryAdd(proj);
+  if (!inst) inst = await startServer({ port: 0 });
+
+  const res = await fetch(`http://127.0.0.1:${inst.port}/api/projects/${entry.slug}/add-row`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ desc: '看图', scope: 'web', link: 'https://example.com/foo' }),
+  });
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.row.link, 'https://example.com/foo');
+
+  const rows = await readRows(path.join(proj, '.tasks', 'tasks.xlsx'), SHEET_IN_PROGRESS);
+  assert.equal(rows[0].link, 'https://example.com/foo');
+
+  const detail = await fetch(`http://127.0.0.1:${inst.port}/api/projects/${entry.slug}`).then(r => r.json());
+  const todoTask = detail.tasks.todo.find(t => t.id === body.row.id);
+  assert.equal(todoTask.link, 'https://example.com/foo');
+});

@@ -49,6 +49,23 @@ async function postAction(path, body) {
   return { ok: r.ok, status: r.status, body: await r.json().catch(() => null) };
 }
 
+function truncateLink(s) {
+  if (!s) return '';
+  return s.length <= 40 ? s : '…' + s.slice(-37);
+}
+
+async function openTaskLink(link) {
+  if (!link) return;
+  if (/^https?:\/\//i.test(link)) {
+    window.open(link, '_blank', 'noopener');
+    return;
+  }
+  const r = await postAction('/api/open', { target: link });
+  if (!r.ok) {
+    alert(`打开失败: ${r.body?.error || r.status}`);
+  }
+}
+
 function statusLabel(p) {
   if (p.online === 'missing') return '失联';
   if (p.online === 'offline') return '离线';
@@ -116,6 +133,19 @@ function renderCard(t, group) {
 
   if (extra) {
     children.push(el('div', { className: 'card-extra' }, extra));
+  }
+
+  if (t.link) {
+    children.push(el('div', { className: 'card-link' },
+      el('button', {
+        className: 'btn-link link-open',
+        title: t.link,
+        onclick: (e) => {
+          e.stopPropagation();
+          openTaskLink(t.link);
+        },
+      }, '↗ ' + truncateLink(t.link)),
+    ));
   }
 
   if (collapsible) {
@@ -264,6 +294,14 @@ function renderAddModal() {
   noteInput.value = form.note || '';
   noteInput.addEventListener('input', e => { form.note = e.target.value; });
 
+  const linkInput = el('input', {
+    className: 'modal-input',
+    type: 'text',
+    placeholder: '链接 / 本地路径（可选，点击卡片打开）',
+  });
+  linkInput.value = form.link || '';
+  linkInput.addEventListener('input', e => { form.link = e.target.value; });
+
   const errorBox = el('div', { className: 'modal-error', id: 'modal-error' });
 
   const modal = el('div', { id: 'add-modal', className: 'modal-backdrop', onclick: e => {
@@ -277,6 +315,7 @@ function renderAddModal() {
         el('label', { className: 'modal-label' }, '优先级', prioSelect),
       ),
       el('label', { className: 'modal-label' }, '备注', noteInput),
+      el('label', { className: 'modal-label' }, '链接', linkInput),
       errorBox,
       el('div', { className: 'modal-actions' },
         el('button', { className: 'btn', onclick: closeAddModal }, '取消'),
@@ -295,6 +334,7 @@ function openAddModal() {
     scope: scopes[0] || '',
     priority: '中',
     note: '',
+    link: '',
   };
   renderAddModal();
 }
@@ -320,6 +360,7 @@ async function submitAddRow() {
     scope: form.scope,
     priority: form.priority,
     note: form.note.trim(),
+    link: form.link.trim(),
   });
   if (r.ok) {
     closeAddModal();

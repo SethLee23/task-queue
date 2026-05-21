@@ -18,7 +18,7 @@ const xlsxPath = path.join(tmpDir, 'tasks.xlsx');
 after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
 beforeEach(() => { if (fs.existsSync(xlsxPath)) fs.unlinkSync(xlsxPath); });
 
-test('createBlankWorkbook 创建带两个 sheet、10 列表头的空工作簿', async () => {
+test('createBlankWorkbook 创建带两个 sheet、表头与 COLUMNS 对齐的空工作簿', async () => {
   await createBlankWorkbook(xlsxPath);
   assert.ok(fs.existsSync(xlsxPath));
   const ExcelJS = require('exceljs');
@@ -34,10 +34,10 @@ test('createBlankWorkbook 创建带两个 sheet、10 列表头的空工作簿', 
   assert.deepEqual(headers, COLUMNS.map(c => c.header));
 });
 
-test('COLUMNS 是 10 列、key 为 id/desc/scope/priority/status/note/question/risk/ctime/ftime', () => {
-  assert.equal(COLUMNS.length, 10);
+test('COLUMNS 11 列、key 为 id/desc/scope/priority/status/note/question/risk/ctime/ftime/link', () => {
+  assert.equal(COLUMNS.length, 11);
   assert.deepEqual(COLUMNS.map(c => c.key), [
-    'id', 'desc', 'scope', 'priority', 'status', 'note', 'question', 'risk', 'ctime', 'ftime',
+    'id', 'desc', 'scope', 'priority', 'status', 'note', 'question', 'risk', 'ctime', 'ftime', 'link',
   ]);
 });
 
