@@ -4,6 +4,12 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const url = require('node:url');
+const { list: registryList } = require('../lib/registry.cjs');
+const { readRows, SHEET_IN_PROGRESS, SHEET_ARCHIVED } = require('../lib/workbook.cjs');
+const { STATES } = require('../lib/states.cjs');
+const { readHeartbeat } = require('../lib/heartbeat.cjs');
+const { readPaused } = require('../lib/paused.cjs');
+const { localDateStr } = require('../lib/datetime.cjs');
 
 const WEB_ROOT = path.join(__dirname, '..', 'web');
 
@@ -14,6 +20,78 @@ const MIME = {
   '.json': 'application/json; charset=utf-8',
   '.svg':  'image/svg+xml',
 };
+
+/**
+ * 判断 ftime 是否属于今天（本地时区）。
+ * ftime 可能是 Date 对象、ISO string 或空值。
+ * @param {unknown} ftime
+ * @param {string} today YYYY-MM-DD 格式的今日日期
+ * @returns {boolean}
+ */
+function isToday(ftime, today) {
+  if (!ftime) return false;
+  const d = ftime instanceof Date ? ftime : new Date(/** @type {string} */ (ftime));
+  if (Number.isNaN(d.getTime())) return false;
+  return localDateStr(d) === today;
+}
+
+/**
+ * 聚合单个项目的状态信息。
+ * @param {{ slug: string, root: string, name: string }} entry
+ * @returns {Promise<object>}
+ */
+async function aggregateProject(entry) {
+  const { slug, root, name } = entry;
+
+  // 检查项目目录是否存在
+  if (!fs.existsSync(root)) {
+    return { slug, root, name, online: 'missing' };
+  }
+
+  const xlsxPath = path.join(root, '.tasks', 'tasks.xlsx');
+  const today = localDateStr();
+
+  let counts = { todo: 0, in_progress: 0, review: 0, blocked: 0, done_today: 0 };
+  if (fs.existsSync(xlsxPath)) {
+    const inProg = await readRows(xlsxPath, SHEET_IN_PROGRESS);
+    const archived = await readRows(xlsxPath, SHEET_ARCHIVED);
+    counts = {
+      todo:        inProg.filter(r => r.status === STATES.TODO).length,
+      in_progress: inProg.filter(r => r.status === STATES.IN_PROGRESS).length,
+      review:      inProg.filter(r => r.status === STATES.REVIEW).length,
+      blocked:     inProg.filter(r => r.status === STATES.BLOCKED).length,
+      done_today:  archived.filter(r => r.status === STATES.DONE && isToday(r.ftime, today)).length,
+    };
+  }
+
+  const hb = readHeartbeat(root);
+  const pauseReason = readPaused(root);
+
+  const result = {
+    slug,
+    root,
+    name,
+    online: 'ok',
+    counts,
+    phase: hb ? hb.phase : null,
+    currentTask: hb && hb.currentTaskId != null
+      ? { id: hb.currentTaskId, desc: hb.currentTaskDesc }
+      : null,
+    paused: pauseReason !== null,
+    pauseReason: pauseReason,
+  };
+  return result;
+}
+
+/**
+ * 处理 GET /api/projects 请求，返回所有注册项目的聚合状态。
+ * @param {http.ServerResponse} res
+ */
+async function handleGetProjects(res) {
+  const entries = registryList();
+  const projects = await Promise.all(entries.map(aggregateProject));
+  sendJson(res, 200, { projects });
+}
 
 function send(res, status, body, contentType = 'text/plain; charset=utf-8') {
   res.writeHead(status, { 'Content-Type': contentType });
@@ -40,7 +118,14 @@ function serveStatic(req, res) {
 
 function handle(req, res) {
   const parsed = url.parse(req.url, true);
-  if (parsed.pathname.startsWith('/api/')) {
+  const { pathname } = parsed;
+
+  if (pathname === '/api/projects' && req.method === 'GET') {
+    handleGetProjects(res).catch(err => sendJson(res, 500, { error: String(err.message) }));
+    return;
+  }
+
+  if (pathname.startsWith('/api/')) {
     return sendJson(res, 404, { error: 'API not implemented yet' });
   }
   serveStatic(req, res);
