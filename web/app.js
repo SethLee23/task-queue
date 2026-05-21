@@ -228,8 +228,8 @@ function renderDetail() {
   const loopBtn = el('button', {
     className: 'btn',
     onclick: () => openLoopCmdModal(),
-    title: '复制启动命令，粘贴到 terminal 即可启动 loop',
-  }, '▶ 启动 loop');
+    title: '生成并复制启动命令，粘贴到 terminal 即可跑起 loop',
+  }, '📋 复制启动命令');
 
   c.appendChild(el('div', { className: 'detail-header' },
     el('div', null,
@@ -438,7 +438,7 @@ function renderLoopCmdModal() {
     onclick: e => { if (e.target.id === 'loop-cmd-modal') closeLoopCmdModal(); },
   },
     el('div', { className: 'modal' },
-      el('div', { className: 'modal-title' }, '启动 loop'),
+      el('div', { className: 'modal-title' }, 'loop 启动命令'),
       el('label', { className: 'modal-label' }, '完整命令（已替换 PROJECT_ROOT）', cmdArea),
       hint,
       el('div', { className: 'modal-actions' },
