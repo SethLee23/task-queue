@@ -18,6 +18,16 @@ node ~/.claude/skills/task-queue/tasks.cjs recover ${PROJECT_ROOT}
 
 如果输出 `recovered > 0`，说明上次有任务被中断已重新排队。
 
+## Step 0.5: 检查是否被面板暂停
+
+```
+node ~/.claude/skills/task-queue/tasks.cjs status ${PROJECT_ROOT}
+```
+
+如果输出含 `"paused": true`，跳到 Step 5（决定下次唤醒），不执行 next/claim。
+
+设计意图：面板的 pause 只影响"取下一条"，不打断正在执行的任务。
+
 ## Step 1: 取下一条任务
 
 ```
