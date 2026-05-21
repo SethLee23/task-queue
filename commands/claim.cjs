@@ -7,6 +7,7 @@ const {
 } = require('../lib/workbook.cjs');
 const { STATES, canTransition } = require('../lib/states.cjs');
 const { sortByPriorityAndCtime } = require('../lib/sort.cjs');
+const { writeHeartbeat } = require('../lib/heartbeat.cjs');
 
 /**
  * 把指定 id 的任务状态改为"进行中"。
@@ -62,8 +63,11 @@ module.exports = async function claim(projectRoot, args) {
     row.commit();
   });
 
+  const finalId = assignedId != null ? assignedId : targetRow.id;
+  writeHeartbeat(projectRoot, { phase: 'executing', currentTaskId: finalId, currentTaskDesc: targetRow.desc });
+
   process.stdout.write(JSON.stringify({
-    id: assignedId != null ? assignedId : targetRow.id,
+    id: finalId,
     desc: targetRow.desc,
     scope: targetRow.scope,
     priority: targetRow.priority,

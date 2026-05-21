@@ -5,6 +5,7 @@ const path = require('node:path');
 const { readRows, SHEET_IN_PROGRESS } = require('../lib/workbook.cjs');
 const { STATES } = require('../lib/states.cjs');
 const { sortByPriorityAndCtime } = require('../lib/sort.cjs');
+const { writeHeartbeat } = require('../lib/heartbeat.cjs');
 
 /**
  * 从"进行中" sheet 取最高优先级 + 最早创建时间的待办，输出 JSON 到 stdout。
@@ -18,6 +19,7 @@ module.exports = async function next(projectRoot, _args) {
   const todos = rows.filter(r => r.status === STATES.TODO);
   sortByPriorityAndCtime(todos);
   if (todos.length === 0) {
+    writeHeartbeat(projectRoot, { phase: 'sleeping', currentTaskId: null });
     process.stdout.write('null\n');
     return;
   }

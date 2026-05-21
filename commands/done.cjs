@@ -9,6 +9,7 @@ const { STATES } = require('../lib/states.cjs');
 const { loadProjectConfig } = require('../lib/config.cjs');
 const { Logger } = require('../lib/logger.cjs');
 const { gitStatus, gitAdd, gitCommit, gitLogToday } = require('../lib/git.cjs');
+const { writeHeartbeat } = require('../lib/heartbeat.cjs');
 
 /**
  * 默认版本号 bump 策略：patch + 1，保留后缀（如 -beta）。
@@ -61,10 +62,18 @@ async function setStatusAndRisk(xlsxPath, rowNumber, status, risk, ftime) {
  * @param {number} rowNumber
  * @param {string} riskMsg
  * @param {Logger} logger
+ * @param {string} projectRoot
+ * @param {number|string} taskId
  */
-async function transitionToReview(xlsxPath, rowNumber, riskMsg, logger) {
+async function transitionToReview(xlsxPath, rowNumber, riskMsg, logger, projectRoot, taskId) {
   await setStatusAndRisk(xlsxPath, rowNumber, STATES.REVIEW, riskMsg, null);
   if (logger) logger.warn(`task → review: ${riskMsg}`);
+  writeHeartbeat(projectRoot, {
+    phase: 'idle',
+    currentTaskId: null,
+    lastFinishedId: taskId,
+    lastFinishedAt: new Date().toISOString(),
+  });
 }
 
 /**
@@ -101,7 +110,7 @@ module.exports = async function done(projectRoot, args) {
   const scopeName = target.scope;
   const scopeCfg = cfg.scopes[scopeName];
   if (!scopeCfg) {
-    await transitionToReview(xlsxPath, target._rowNumber, `未识别的 scope: ${scopeName}`, logger);
+    await transitionToReview(xlsxPath, target._rowNumber, `未识别的 scope: ${scopeName}`, logger, projectRoot, target.id);
     return;
   }
 
@@ -111,6 +120,8 @@ module.exports = async function done(projectRoot, args) {
       target._rowNumber,
       `scope ${scopeName} 不允许自动 commit，请人工 review`,
       logger,
+      projectRoot,
+      target.id,
     );
     return;
   }
@@ -121,6 +132,12 @@ module.exports = async function done(projectRoot, args) {
       target.status = STATES.DONE;
       target.ftime = new Date().toISOString();
       await moveRowToArchive(xlsxPath, target);
+      writeHeartbeat(projectRoot, {
+        phase: 'idle',
+        currentTaskId: null,
+        lastFinishedId: target.id,
+        lastFinishedAt: target.ftime,
+      });
       logger.info(`task #${target.id} done (无文件改动，已归档)`);
       return;
     }
@@ -132,6 +149,8 @@ module.exports = async function done(projectRoot, args) {
         target._rowNumber,
         '模块名推断失败，请补全 commit message 后改回待办',
         logger,
+        projectRoot,
+        target.id,
       );
       return;
     }
@@ -183,6 +202,12 @@ module.exports = async function done(projectRoot, args) {
     target.status = STATES.DONE;
     target.ftime = new Date().toISOString();
     await moveRowToArchive(xlsxPath, target);
+    writeHeartbeat(projectRoot, {
+      phase: 'idle',
+      currentTaskId: null,
+      lastFinishedId: target.id,
+      lastFinishedAt: target.ftime,
+    });
     logger.info(`task #${target.id} done + commit ${version} 【${moduleName}】`);
   } catch (e) {
     const msg = (e.message || '').slice(0, 200);
@@ -191,6 +216,8 @@ module.exports = async function done(projectRoot, args) {
       target._rowNumber,
       `commit 阶段失败：${msg}`,
       logger,
+      projectRoot,
+      target.id,
     );
   }
 };

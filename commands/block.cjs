@@ -7,6 +7,7 @@ const {
 } = require('../lib/workbook.cjs');
 const { STATES, canTransition } = require('../lib/states.cjs');
 const { Logger } = require('../lib/logger.cjs');
+const { writeHeartbeat } = require('../lib/heartbeat.cjs');
 
 /**
  * 把指定 id 的任务状态改为"阻塞-等答疑"，同时写入疑问内容。
@@ -39,4 +40,10 @@ module.exports = async function block(projectRoot, args) {
   });
 
   new Logger(projectRoot).info(`task #${target.id} → blocked: ${question}`);
+  writeHeartbeat(projectRoot, {
+    phase: 'idle',
+    currentTaskId: null,
+    lastFinishedId: target.id,
+    lastFinishedAt: new Date().toISOString(),
+  });
 };
