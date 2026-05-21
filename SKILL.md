@@ -117,7 +117,7 @@ node ~/.claude/skills/task-queue/tasks.cjs add-row /path/proj "登录按钮没�
 
 - `priority` 不传默认 `中`；只接受 `高`/`中`/`低`
 - `scope` 必须在 project.config.js 已知 scopes 中，否则命令报错
-- id 留空，由后续 `claim` 时自动分配为最大 id + 1
+- id 在 add-row 时按 max+1 即时分配（输出 JSON 中包含 id）
 - 不要让用户直接打开 Excel 加 —— 走命令一致性更好
 
 ## 子命令一览（速查）

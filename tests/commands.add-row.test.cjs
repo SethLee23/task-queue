@@ -46,7 +46,7 @@ test('add-row 成功路径写入待办行', async () => {
   assert.equal(rows[0].priority, '高');
   assert.equal(rows[0].status, '待办');
   assert.equal(rows[0].note, '紧急上线');
-  assert.equal(rows[0].id, '');
+  assert.equal(rows[0].id, 1);
   assert.equal(rows[0].ftime, '');
   assert.ok(/^\d{4}-\d{2}-\d{2}T/.test(String(rows[0].ctime)), 'ctime 应是 ISO 时间戳');
 });
@@ -79,13 +79,15 @@ test('add-row 缺 scope 抛错', async () => {
   await assert.rejects(() => addRowCmd(proj, ['x']), /scope/);
 });
 
-test('add-row 多次追加 — 行依次写入', async () => {
+test('add-row 多次追加 — 行依次写入且 id 自增', async () => {
   const proj = await setupProject();
   await addRowCmd(proj, ['a', 'web']);
   await addRowCmd(proj, ['b', 'core', '低']);
   const rows = await readRows(path.join(proj, '.tasks', 'tasks.xlsx'), SHEET_IN_PROGRESS);
   assert.equal(rows.length, 2);
   assert.equal(rows[0].desc, 'a');
+  assert.equal(rows[0].id, 1);
   assert.equal(rows[1].desc, 'b');
+  assert.equal(rows[1].id, 2);
   assert.equal(rows[1].priority, '低');
 });

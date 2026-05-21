@@ -2,7 +2,7 @@
 'use strict';
 
 const path = require('node:path');
-const { withWorkbook, SHEET_IN_PROGRESS } = require('../lib/workbook.cjs');
+const { readRows, withWorkbook, SHEET_IN_PROGRESS } = require('../lib/workbook.cjs');
 const { STATES, PRIORITY_ORDER } = require('../lib/states.cjs');
 const { loadProjectConfig } = require('../lib/config.cjs');
 
@@ -10,7 +10,7 @@ const VALID_PRIORITIES = new Set(PRIORITY_ORDER);
 
 /**
  * 追加一条状态为"待办"的任务到进行中 sheet。
- * id 留空（由后续 claim 时按 max+1 分配），ctime 自动填本地 ISO 时间戳。
+ * id 按 max+1 即时分配，ctime 自动填本地 ISO 时间戳。
  *
  * 校验：
  * - desc / scope 必填
@@ -42,10 +42,17 @@ module.exports = async function addRow(projectRoot, args) {
   const ctime = new Date().toISOString();
   const xlsxPath = path.join(projectRoot, '.tasks', 'tasks.xlsx');
 
+  const existingRows = await readRows(xlsxPath, SHEET_IN_PROGRESS);
+  const maxId = existingRows.reduce((m, r) => {
+    const n = parseInt(r.id, 10);
+    return Number.isFinite(n) && n > m ? n : m;
+  }, 0);
+  const id = maxId + 1;
+
   await withWorkbook(xlsxPath, async wb => {
     const ws = wb.getWorksheet(SHEET_IN_PROGRESS);
     ws.addRow({
-      id: '',
+      id,
       desc,
       scope,
       priority,
@@ -59,6 +66,6 @@ module.exports = async function addRow(projectRoot, args) {
   });
 
   process.stdout.write(JSON.stringify({
-    desc, scope, priority, note, status: STATES.TODO, ctime,
+    id, desc, scope, priority, note, status: STATES.TODO, ctime,
   }) + '\n');
 };
