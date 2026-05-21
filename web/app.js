@@ -12,7 +12,7 @@ const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 
 function el(tag, attrs = {}, ...children) {
   const e = document.createElement(tag);
-  for (const [k, v] of Object.entries(attrs)) {
+  for (const [k, v] of Object.entries(attrs || {})) {
     if (k === 'className') e.className = v;
     else if (k.startsWith('on')) e.addEventListener(k.slice(2).toLowerCase(), v);
     else if (v != null) e.setAttribute(k, v);
