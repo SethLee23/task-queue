@@ -12,6 +12,20 @@
   --gray: #6c7280;
 }
 
+:root[data-theme="eye-care"] {
+  --bg: #f5f1e8;
+  --panel: #ede7d6;
+  --panel-2: #e3dcc7;
+  --border: #d6cdb5;
+  --text: #3d3a32;
+  --text-dim: #807a6a;
+  --accent: #a8742c;
+  --green: #6b8e4e;
+  --yellow: #b88a2a;
+  --red: #b8533a;
+  --gray: #807a6a;
+}
+
 * { box-sizing: border-box; }
 body {
   margin: 0;
@@ -40,6 +54,33 @@ body {
   color: var(--text-dim);
   font-weight: 500;
   letter-spacing: 0.5px;
+}
+.sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-right: 4px;
+}
+.sidebar-header h1 { margin: 8px 8px 12px; flex: 1; }
+.btn-icon {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  border-radius: 4px;
+  width: 28px;
+  height: 28px;
+  font-size: 14px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  margin-bottom: 12px;
+  flex-shrink: 0;
+}
+.btn-icon:hover {
+  border-color: var(--accent);
+  color: var(--text);
 }
 .project-item {
   padding: 8px 10px;
@@ -291,7 +332,7 @@ body {
 .btn.danger { color: var(--red); }
 .btn.danger:hover { background: rgba(232, 93, 93, 0.15); border-color: var(--red); }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-.btn.primary:hover { background: #3a8de0; }
+.btn.primary:hover { filter: brightness(0.92); }
 
 /* ---------- 今日完成（底部抽屉） ---------- */
 .done-strip {

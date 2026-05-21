@@ -16,6 +16,27 @@ const LONG_TEXT_THRESHOLD = 120;
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 
+const THEME_KEY = 'task-queue-theme';
+const VALID_THEMES = ['dark', 'eye-care'];
+
+function applyTheme(theme) {
+  const t = VALID_THEMES.includes(theme) ? theme : 'dark';
+  if (t === 'dark') document.documentElement.removeAttribute('data-theme');
+  else document.documentElement.setAttribute('data-theme', t);
+  const btn = document.getElementById('theme-toggle');
+  if (btn) {
+    btn.textContent = t === 'eye-care' ? '☀️' : '🌙';
+    btn.title = t === 'eye-care' ? '切到深色' : '切到护眼浅色';
+  }
+}
+
+function toggleTheme() {
+  const cur = localStorage.getItem(THEME_KEY) || 'dark';
+  const next = cur === 'eye-care' ? 'dark' : 'eye-care';
+  localStorage.setItem(THEME_KEY, next);
+  applyTheme(next);
+}
+
 function el(tag, attrs = {}, ...children) {
   const e = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs || {})) {
@@ -512,6 +533,54 @@ async function submitReply() {
   }
 }
 
+async function submitReplyAndCopyLoop() {
+  const m = state.replyModal;
+  if (!m || m.submitting) return;
+  if (!m.reply.trim()) {
+    m.error = '回复内容不能为空';
+    renderReplyModal();
+    return;
+  }
+  m.submitting = true;
+  m.error = '';
+  renderReplyModal();
+
+  const r = await postAction(`/api/projects/${state.selectedSlug}/reply`, {
+    id: m.id,
+    reply: m.reply.trim(),
+    resume: true,
+  });
+  if (!r.ok) {
+    m.submitting = false;
+    m.error = r.body?.error || `落库失败 (${r.status})`;
+    renderReplyModal();
+    return;
+  }
+
+  try {
+    const resp = await fetch(`/api/projects/${state.selectedSlug}/loop-command`);
+    const body = await resp.json().catch(() => ({}));
+    if (!resp.ok || !body.command) {
+      m.submitting = false;
+      m.error = '已落库，但获取命令失败：' + (body.error || resp.status);
+      renderReplyModal();
+      await refreshProjects();
+      return;
+    }
+    await navigator.clipboard.writeText(body.command);
+  } catch (err) {
+    m.submitting = false;
+    m.error = '已落库，但复制失败：' + err.message;
+    renderReplyModal();
+    await refreshProjects();
+    return;
+  }
+
+  closeReplyModal();
+  await refreshProjects();
+  alert('✓ 回复已落库（状态转回待办），loop 启动命令已复制到剪贴板，去 terminal 粘贴即可让 claude 接手');
+}
+
 function renderReplyModal() {
   const existing = document.getElementById('reply-modal');
   if (existing) existing.remove();
@@ -565,10 +634,16 @@ function renderReplyModal() {
       el('div', { className: 'modal-actions' },
         el('button', { className: 'btn', onclick: closeReplyModal }, '取消'),
         el('button', {
+          className: 'btn',
+          disabled: m.submitting,
+          onclick: submitReplyAndCopyLoop,
+          title: '落库 + 复制 loop 启动命令；粘贴到 terminal 即可让 claude 继续处理',
+        }, '📋 提交并复制 loop 命令'),
+        el('button', {
           className: 'btn primary',
           disabled: m.submitting,
           onclick: submitReply,
-        }, m.submitting ? '提交中…' : '提交'),
+        }, m.submitting ? '提交中…' : '仅提交'),
       ),
     ),
   );
@@ -636,3 +711,5 @@ async function cleanupMissing(count) {
 
 refreshProjects();
 setInterval(refreshProjects, 5000);
+applyTheme(localStorage.getItem(THEME_KEY) || 'dark');
+document.getElementById('theme-toggle')?.addEventListener('click', toggleTheme);
