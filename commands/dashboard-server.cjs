@@ -5,8 +5,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const url = require('node:url');
 const { list: registryList } = require('../lib/registry.cjs');
-const { readRows, SHEET_IN_PROGRESS, SHEET_ARCHIVED } = require('../lib/workbook.cjs');
-const { STATES } = require('../lib/states.cjs');
+const { readRows, withWorkbook, SHEET_IN_PROGRESS, SHEET_ARCHIVED, colIndex } = require('../lib/workbook.cjs');
+const { STATES, PRIORITY_ORDER } = require('../lib/states.cjs');
 const { readHeartbeat } = require('../lib/heartbeat.cjs');
 const { readPaused } = require('../lib/paused.cjs');
 const { localDateStr } = require('../lib/datetime.cjs');
@@ -29,6 +29,111 @@ const MIME = {
   '.json': 'application/json; charset=utf-8',
   '.svg':  'image/svg+xml',
 };
+
+/** 合法优先级集合 */
+const VALID_PRIORITIES = new Set(PRIORITY_ORDER);
+
+/**
+ * 读取并解析请求 body 为 JSON 对象。
+ * @param {http.IncomingMessage} req
+ * @returns {Promise<object>}
+ */
+function readJsonBody(req) {
+  return new Promise((resolve, reject) => {
+    let raw = '';
+    req.on('data', chunk => { raw += chunk; });
+    req.on('end', () => {
+      try { resolve(JSON.parse(raw || '{}')); }
+      catch (e) { reject(Object.assign(new Error('invalid JSON body'), { statusCode: 400 })); }
+    });
+    req.on('error', reject);
+  });
+}
+
+/**
+ * 在 withWorkbook 内定位 taskId 对应的 row，校验 expectedStatus，
+ * 再调用 mutateFn(row) 做字段修改，最后 row.commit()。
+ *
+ * @param {{ root: string }} entry 项目注册信息
+ * @param {number|string} taskId 任务 id
+ * @param {string|null} expectedStatus null = 不校验状态
+ * @param {(row: import('exceljs').Row) => void} mutateFn 修改行的函数
+ * @returns {Promise<{ notFound?: true, conflict?: true }>} 空对象表示成功
+ */
+async function mutateTaskRow(entry, taskId, expectedStatus, mutateFn) {
+  const xlsxPath = path.join(entry.root, '.tasks', 'tasks.xlsx');
+
+  // 先读出来找 rowNumber 和当前 status（在锁外，避免长时持锁）
+  const rows = await readRows(xlsxPath, SHEET_IN_PROGRESS);
+  const target = rows.find(r => String(r.id) === String(taskId));
+  if (!target) return { notFound: true };
+  if (expectedStatus !== null && target.status !== expectedStatus) return { conflict: true };
+
+  await withWorkbook(xlsxPath, async wb => {
+    const ws = wb.getWorksheet(SHEET_IN_PROGRESS);
+    const row = ws.getRow(target._rowNumber);
+    mutateFn(row);
+    row.commit();
+  });
+  return {};
+}
+
+/**
+ * 处理 POST /api/projects/:slug/skip
+ * body: { id }  待办 → 跳过；非待办 → 409；id 不存在 → 404
+ * @param {http.IncomingMessage} req
+ * @param {http.ServerResponse} res
+ * @param {string} rawSlug
+ */
+async function handleSkip(req, res, rawSlug) {
+  const slug = decodeURIComponent(rawSlug);
+  if (!SLUG_RE.test(slug)) return sendJson(res, 400, { error: 'invalid slug format' });
+
+  const entry = registryList().find(p => p.slug === slug);
+  if (!entry) return sendJson(res, 404, { error: 'project not found' });
+
+  const body = await readJsonBody(req);
+  const taskId = body.id;
+  if (taskId == null) return sendJson(res, 400, { error: 'id is required' });
+
+  const result = await mutateTaskRow(entry, taskId, STATES.TODO, row => {
+    row.getCell(colIndex('status')).value = STATES.SKIPPED;
+  });
+
+  if (result.notFound) return sendJson(res, 404, { error: 'task not found' });
+  if (result.conflict) return sendJson(res, 409, { error: 'task is not in TODO state' });
+  sendJson(res, 200, { ok: true });
+}
+
+/**
+ * 处理 POST /api/projects/:slug/priority
+ * body: { id, priority }  改待办任务优先级；非法 priority → 400；id 不存在 → 404
+ * @param {http.IncomingMessage} req
+ * @param {http.ServerResponse} res
+ * @param {string} rawSlug
+ */
+async function handlePriority(req, res, rawSlug) {
+  const slug = decodeURIComponent(rawSlug);
+  if (!SLUG_RE.test(slug)) return sendJson(res, 400, { error: 'invalid slug format' });
+
+  const entry = registryList().find(p => p.slug === slug);
+  if (!entry) return sendJson(res, 404, { error: 'project not found' });
+
+  const body = await readJsonBody(req);
+  const { id: taskId, priority } = body;
+  if (taskId == null) return sendJson(res, 400, { error: 'id is required' });
+  if (!priority || !VALID_PRIORITIES.has(priority)) {
+    return sendJson(res, 400, { error: `invalid priority, must be one of: ${PRIORITY_ORDER.join(', ')}` });
+  }
+
+  const result = await mutateTaskRow(entry, taskId, STATES.TODO, row => {
+    row.getCell(colIndex('priority')).value = priority;
+  });
+
+  if (result.notFound) return sendJson(res, 404, { error: 'task not found' });
+  if (result.conflict) return sendJson(res, 409, { error: 'task is not in TODO state' });
+  sendJson(res, 200, { ok: true });
+}
 
 /**
  * 判断 ftime 是否属于今天（本地时区）。
@@ -248,6 +353,18 @@ function handle(req, res) {
 
   if (pathname === '/api/projects' && req.method === 'GET') {
     handleGetProjects(res).catch(err => sendJson(res, 500, { error: String(err.message) }));
+    return;
+  }
+
+  const skipM = pathname.match(/^\/api\/projects\/([^/]+)\/skip$/);
+  if (skipM && req.method === 'POST') {
+    handleSkip(req, res, skipM[1]).catch(err => sendJson(res, 500, { error: String(err.message) }));
+    return;
+  }
+
+  const prioM = pathname.match(/^\/api\/projects\/([^/]+)\/priority$/);
+  if (prioM && req.method === 'POST') {
+    handlePriority(req, res, prioM[1]).catch(err => sendJson(res, 500, { error: String(err.message) }));
     return;
   }
 
