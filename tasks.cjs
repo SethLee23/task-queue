@@ -17,7 +17,7 @@ function ensureDeps() {
 
 const KNOWN_COMMANDS = [
   'detect', 'init-write', 'next', 'claim', 'done', 'review',
-  'block', 'status', 'sweep', 'recover', 'add-row', 'test-push',
+  'block', 'reply', 'status', 'sweep', 'recover', 'add-row', 'test-push',
   'dashboard', 'heartbeat',
 ];
 

@@ -13,6 +13,7 @@ const { readPaused, setPaused, clearPaused } = require('../lib/paused.cjs');
 const { localDateStr } = require('../lib/datetime.cjs');
 const { loadProjectConfig } = require('../lib/config.cjs');
 const { addRowCore } = require('./add-row.cjs');
+const { replyCore } = require('./reply.cjs');
 
 const WEB_ROOT = path.join(__dirname, '..', 'web');
 
@@ -287,6 +288,39 @@ async function handleLoopCommand(res, rawSlug) {
     `claude ${shellSingleQuote('/loop ' + prompt)}`;
 
   sendJson(res, 200, { command, projectRoot: entry.root });
+}
+
+/**
+ * 处理 POST /api/projects/:slug/reply
+ * body: { id, reply, resume?: bool }
+ * 给指定任务的 note 顶部追加用户答复；resume=true 时把 blocked/review 状态转回 todo。
+ * @param {http.IncomingMessage} req
+ * @param {http.ServerResponse} res
+ * @param {string} rawSlug
+ */
+async function handleReply(req, res, rawSlug) {
+  const slug = decodeURIComponent(rawSlug);
+  if (!SLUG_RE.test(slug)) return sendJson(res, 400, { error: 'invalid slug format' });
+
+  const entry = registryList().find(p => p.slug === slug);
+  if (!entry) return sendJson(res, 404, { error: 'project not found' });
+
+  const body = await readJsonBody(req).catch(() => null);
+  if (!body || body.id == null) return sendJson(res, 400, { error: 'id 必填' });
+  if (!body.reply || !String(body.reply).trim()) {
+    return sendJson(res, 400, { error: 'reply 内容不能为空' });
+  }
+
+  try {
+    const result = await replyCore(entry.root, {
+      id: body.id,
+      reply: String(body.reply),
+      resume: !!body.resume,
+    });
+    sendJson(res, 200, { ok: true, task: result });
+  } catch (err) {
+    sendJson(res, 400, { error: String(err.message) });
+  }
 }
 
 /**
@@ -579,6 +613,12 @@ function handle(req, res) {
   const loopCmdM = pathname.match(/^\/api\/projects\/([^/]+)\/loop-command$/);
   if (loopCmdM && req.method === 'GET') {
     handleLoopCommand(res, loopCmdM[1]).catch(err => sendJson(res, 500, { error: String(err.message) }));
+    return;
+  }
+
+  const replyM = pathname.match(/^\/api\/projects\/([^/]+)\/reply$/);
+  if (replyM && req.method === 'POST') {
+    handleReply(req, res, replyM[1]).catch(err => sendJson(res, 500, { error: String(err.message) }));
     return;
   }
 

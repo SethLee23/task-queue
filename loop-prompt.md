@@ -43,6 +43,13 @@ node ~/.claude/skills/task-queue/tasks.cjs next ${PROJECT_ROOT}
 node ~/.claude/skills/task-queue/tasks.cjs claim ${PROJECT_ROOT} <id>
 ```
 
+claim 完成后，**必须**检查 `note` 字段顶部是否含 `[reply YYYY-MM-DD HH:mm] ...\n---\n...` 块：
+
+- 有 → 这是用户对此前 review/block 的答复，**必须**先把答复完整读完再开工；按答复要求调整方案/范围/做法，不要重复犯之前被指出的问题
+- 无 → 正常按 desc 执行
+
+reply 块只用于读取上下文，**不要清除或改写它**；done/review/block 自然会把新内容追加到 note 顶部，旧 reply 自动保留为历史。
+
 ## Step 3: 执行任务
 
 按 `desc` 字段描述执行，严格遵守：

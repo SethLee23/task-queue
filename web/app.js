@@ -8,6 +8,7 @@ const state = {
   collapsedCards: new Set(),
   addModal: null,
   loopCmdModal: null,
+  replyModal: null,
 };
 
 const LONG_TEXT_THRESHOLD = 120;
@@ -170,6 +171,15 @@ function renderCard(t, group) {
     ));
   }
 
+  if (group === 'blocked' || group === 'review') {
+    children.push(el('div', { className: 'card-actions' },
+      el('button', {
+        className: 'btn primary',
+        onclick: () => openReplyModal(t, group),
+      }, '💬 回复'),
+    ));
+  }
+
   return el('div', { className: 'card' + (collapsible && collapsed ? ' collapsed' : '') }, ...children);
 }
 
@@ -266,6 +276,7 @@ function renderDetail() {
 
   renderAddModal();
   renderLoopCmdModal();
+  renderReplyModal();
 }
 
 function renderAddModal() {
@@ -452,6 +463,117 @@ function renderLoopCmdModal() {
     ),
   );
   document.body.appendChild(modal);
+}
+
+function openReplyModal(task, group) {
+  state.replyModal = {
+    id: task.id,
+    group,
+    desc: task.desc || '',
+    extra: group === 'review' ? (task.risk || '') : (task.question || ''),
+    note: task.note || '',
+    reply: '',
+    resume: true,
+    error: '',
+    submitting: false,
+  };
+  renderReplyModal();
+}
+
+function closeReplyModal() {
+  state.replyModal = null;
+  renderReplyModal();
+}
+
+async function submitReply() {
+  const m = state.replyModal;
+  if (!m || m.submitting) return;
+  if (!m.reply.trim()) {
+    m.error = '回复内容不能为空';
+    renderReplyModal();
+    return;
+  }
+  m.submitting = true;
+  m.error = '';
+  renderReplyModal();
+
+  const r = await postAction(`/api/projects/${state.selectedSlug}/reply`, {
+    id: m.id,
+    reply: m.reply.trim(),
+    resume: !!m.resume,
+  });
+  if (r.ok) {
+    closeReplyModal();
+    await refreshProjects();
+  } else {
+    m.submitting = false;
+    m.error = r.body?.error || `失败 (${r.status})`;
+    renderReplyModal();
+  }
+}
+
+function renderReplyModal() {
+  const existing = document.getElementById('reply-modal');
+  if (existing) existing.remove();
+  if (!state.replyModal) return;
+
+  const m = state.replyModal;
+
+  const replyInput = el('textarea', {
+    className: 'modal-input',
+    rows: 5,
+    placeholder: '回复内容（会以 [reply 时间] 形式追加到任务 note 顶部）',
+  });
+  replyInput.value = m.reply || '';
+  replyInput.addEventListener('input', e => { m.reply = e.target.value; });
+
+  const resumeCheckbox = el('input', { type: 'checkbox', id: 'reply-resume' });
+  if (m.resume) resumeCheckbox.checked = true;
+  resumeCheckbox.addEventListener('change', e => { m.resume = e.target.checked; });
+
+  const resumeLabel = group => group === 'review'
+    ? '提交后恢复为待办（取消 review 标记，让 loop 重做）'
+    : '提交后恢复为待办（清空疑问，让 loop 重跑）';
+
+  const extraBlock = m.extra ? el('div', { className: 'reply-extra' },
+    el('div', { className: 'reply-extra-label' }, m.group === 'review' ? '风险' : '疑问'),
+    el('div', { className: 'reply-extra-body' }, m.extra),
+  ) : null;
+
+  const noteBlock = m.note ? el('details', { className: 'reply-note-details' },
+    el('summary', null, '查看现有 note'),
+    el('pre', { className: 'reply-note-pre' }, m.note),
+  ) : null;
+
+  const errorBox = el('div', { className: 'modal-error' }, m.error || '');
+
+  const modal = el('div', {
+    id: 'reply-modal',
+    className: 'modal-backdrop',
+    onclick: e => { if (e.target.id === 'reply-modal') closeReplyModal(); },
+  },
+    el('div', { className: 'modal' },
+      el('div', { className: 'modal-title' }, `回复 #${m.id} ${m.desc.slice(0, 40)}${m.desc.length > 40 ? '…' : ''}`),
+      extraBlock,
+      el('label', { className: 'modal-label' }, '回复内容', replyInput),
+      el('label', { className: 'modal-label inline' },
+        resumeCheckbox,
+        el('span', null, ' ' + resumeLabel(m.group)),
+      ),
+      noteBlock,
+      errorBox,
+      el('div', { className: 'modal-actions' },
+        el('button', { className: 'btn', onclick: closeReplyModal }, '取消'),
+        el('button', {
+          className: 'btn primary',
+          disabled: m.submitting,
+          onclick: submitReply,
+        }, m.submitting ? '提交中…' : '提交'),
+      ),
+    ),
+  );
+  document.body.appendChild(modal);
+  replyInput.focus();
 }
 
 async function refreshProjects() {

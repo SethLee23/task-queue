@@ -380,3 +380,54 @@ body {
   margin-top: 4px;
 }
 .modal-actions .btn { padding: 6px 16px; font-size: 12px; }
+
+.modal-label.inline {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text);
+}
+.modal-label.inline input[type=checkbox] {
+  margin: 0;
+}
+.reply-extra {
+  background: var(--panel-2);
+  border-left: 3px solid var(--yellow);
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  max-height: 120px;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+.reply-extra-label {
+  font-size: 10px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 2px;
+}
+.reply-extra-body {
+  color: var(--text);
+}
+.reply-note-details {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.reply-note-details summary {
+  cursor: pointer;
+  padding: 4px 0;
+  user-select: none;
+}
+.reply-note-pre {
+  margin: 4px 0 0;
+  padding: 6px 8px;
+  background: var(--panel-2);
+  border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  white-space: pre-wrap;
+  max-height: 160px;
+  overflow: auto;
+}
