@@ -5,6 +5,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { createBlankWorkbook } = require('../lib/workbook.cjs');
 const { MODULE_DICT } = require('../lib/module-dict.cjs');
+const { add: registryAdd } = require('../lib/registry.cjs');
+const { Logger } = require('../lib/logger.cjs');
 
 /**
  * 一次性替换模板中所有 __X__ 占位符，避免顺序敏感问题。
@@ -83,8 +85,9 @@ function buildDefaultModule(candidateModules) {
  * 2. 渲染 project.config.js 模板并写入
  * 3. 创建空白 tasks.xlsx（若不存在）
  * 4. 追加 .gitignore 条目（幂等，不重复追加）
+ * 5. 落盘成功后 best-effort 注册到全局 registry（失败不阻断 init）
  *
- * 输出 JSON 到 stdout：{ created, gitignoreAppended }
+ * 输出 JSON 到 stdout：{ created, gitignoreAppended, registered }
  *
  * @param {string} projectRoot 项目根目录绝对路径
  * @param {string[]} args 剩余参数，args[0] 为 answers JSON 字符串
@@ -173,6 +176,18 @@ module.exports = async function initWrite(projectRoot, args) {
   }
   if (appended) fs.writeFileSync(gitignorePath, gitignoreContent);
 
+  // best-effort 注册到全局 registry，失败不阻断 init
+  let registered = null;
+  try {
+    registered = registryAdd(projectRoot);
+  } catch (e) {
+    try {
+      new Logger(projectRoot).warn(`registry.add 失败（不阻断 init）: ${e.message}`);
+    } catch (_) {
+      // logger 自身失败时静默
+    }
+  }
+
   process.stdout.write(JSON.stringify({
     created: {
       configFile: path.join('.tasks', 'project.config.js'),
@@ -180,5 +195,6 @@ module.exports = async function initWrite(projectRoot, args) {
       logsDir:    path.join('.tasks', 'logs'),
     },
     gitignoreAppended: appended,
+    registered: registered ? { slug: registered.slug, root: registered.root } : null,
   }, null, 2) + '\n');
 };

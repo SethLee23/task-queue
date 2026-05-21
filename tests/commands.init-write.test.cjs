@@ -171,6 +171,28 @@ test('inferModule 正确性：web/src/view/Router/ 命中 "路由管理"', async
   assert.equal(result4, null, '未知 scope 应返回 null');
 });
 
+test('init-write 末尾自动注册到 registry，输出含 registered 字段', async () => {
+  process.env.TASK_QUEUE_REGISTRY_PATH = path.join(tmpBase, `reg-${Date.now()}.json`);
+  // 清除 registry 模块缓存，确保读取新 env
+  delete require.cache[require.resolve('../lib/registry.cjs')];
+
+  const proj = fs.mkdtempSync(path.join(tmpBase, 'init-reg-'));
+  fs.writeFileSync(path.join(proj, 'package.json'), JSON.stringify({ name: 'x', version: '1.0.0' }));
+
+  const out = await capture(() => initWrite(proj, [JSON.stringify(BASE_ANSWERS)]));
+  const parsed = JSON.parse(out);
+
+  assert.ok(parsed.registered, 'init-write 输出应含 registered 字段');
+  assert.equal(parsed.registered.root, proj, 'registered.root 应等于 projectRoot');
+  assert.ok(parsed.registered.slug, 'registered.slug 应存在');
+
+  const { list } = require('../lib/registry.cjs');
+  const roots = list().map(p => p.root);
+  assert.ok(roots.includes(proj), 'registry 应包含该 project');
+
+  delete process.env.TASK_QUEUE_REGISTRY_PATH;
+});
+
 test('inferModule 反向字典含 Settings 和 Global 双 key（均映射"全局设置"）', async () => {
   const proj = fs.mkdtempSync(path.join(tmpBase, 'infer-dual-key-'));
 
