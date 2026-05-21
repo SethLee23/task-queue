@@ -4,7 +4,7 @@ const state = {
   projects: [],
   selectedSlug: null,
   detail: null,
-  expanded: { in_progress: true, todo: false, review: false, blocked: false, done_today: false },
+  doneCollapsed: true,
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -74,42 +74,64 @@ function renderProjects() {
   }
 }
 
-function renderTaskRow(t, group) {
-  const actions = [];
-  if (group === 'todo') {
-    actions.push(el('button', {
-      className: 'btn',
-      onclick: () => changePriority(t.id),
-    }, '改优先级'));
-    actions.push(el('button', {
-      className: 'btn danger',
-      onclick: () => skipTask(t.id),
-    }, 'skip'));
-  }
-  return el('div', { className: 'task-row' },
-    el('div', { className: 'task-desc' },
-      el('div', null, `#${t.id} ${t.desc}`),
-      el('div', { className: 'meta', style: 'font-size:11px;color:var(--text-dim)' },
-        `scope: ${t.scope}  ·  优先级: ${t.priority}` + (t.risk ? `  ·  风险: ${t.risk}` : '')
-        + (t.question ? `  ·  疑问: ${t.question}` : ''),
-      ),
+function renderCard(t, group) {
+  const chips = [
+    el('span', { className: 'chip' }, t.scope || '—'),
+    el('span', { className: `chip prio-${t.priority || '中'}` }, t.priority || '中'),
+  ];
+  if (t.risk) chips.push(el('span', { className: 'chip risk', title: t.risk }, '⚠ 风险'));
+  if (t.question) chips.push(el('span', { className: 'chip question', title: t.question }, '? 疑问'));
+
+  const children = [
+    el('div', { className: 'card-desc' },
+      el('span', { className: 'card-id' }, `#${t.id}`),
+      t.desc || '',
     ),
-    el('div', { className: 'task-actions' }, ...actions),
+    el('div', { className: 'card-chips' }, ...chips),
+  ];
+
+  const extra = group === 'review' ? t.risk : group === 'blocked' ? t.question : '';
+  if (extra) {
+    children.push(el('div', { className: 'card-extra', title: extra }, extra));
+  }
+
+  if (group === 'todo') {
+    children.push(el('div', { className: 'card-actions' },
+      el('button', { className: 'btn', onclick: () => changePriority(t.id) }, '改优先级'),
+      el('button', { className: 'btn danger', onclick: () => skipTask(t.id) }, 'skip'),
+    ));
+  }
+
+  return el('div', { className: 'card' }, ...children);
+}
+
+function renderColumn(label, key, items) {
+  return el('div', { className: 'column' },
+    el('div', { className: 'column-header' },
+      el('span', null, label),
+      el('span', { className: 'col-count' }, String(items.length)),
+    ),
+    el('div', { className: 'column-body' },
+      ...items.map(t => renderCard(t, key)),
+    ),
   );
 }
 
-function renderGroup(label, key, items) {
-  const expanded = state.expanded[key] || items.length > 0 && key === 'in_progress';
-  return el('div', { className: 'group' + (expanded ? ' expanded' : '') },
+function renderDoneStrip(items) {
+  const collapsed = state.doneCollapsed;
+  return el('div', { className: 'done-strip' + (collapsed ? ' collapsed' : '') },
     el('div', {
-      className: 'group-header',
-      onclick: (e) => { state.expanded[key] = !state.expanded[key]; renderDetail(); },
+      className: 'done-header',
+      onclick: () => { state.doneCollapsed = !state.doneCollapsed; renderDetail(); },
     },
-      el('span', { className: 'group-title' }, label),
-      el('span', { className: 'group-count' }, `(${items.length})`),
+      el('span', null, `今日完成 (${items.length})`),
+      el('span', null, collapsed ? '▸ 展开' : '▾ 折叠'),
     ),
-    el('div', { className: 'group-body' },
-      ...items.map(t => renderTaskRow(t, key)),
+    el('div', { className: 'done-body' },
+      ...items.map(t => el('div', { className: 'done-item', title: t.desc },
+        el('span', { className: 'done-id' }, `#${t.id}`),
+        (t.desc || '').slice(0, 40) + ((t.desc || '').length > 40 ? '…' : ''),
+      )),
     ),
   );
 }
@@ -117,14 +139,28 @@ function renderGroup(label, key, items) {
 function renderDetail() {
   $('#detail-empty').style.display = state.detail ? 'none' : 'block';
   const c = $('#detail-content');
-  c.style.display = state.detail ? 'block' : 'none';
+  c.style.display = state.detail ? 'flex' : 'none';
   if (!state.detail) return;
 
   const { project: p, tasks } = state.detail;
   c.innerHTML = '';
-  c.appendChild(el('h2', null, p.name, ' ', el('span', { className: `dot ${p.online}` })));
-  c.appendChild(el('div', { className: 'meta' },
-    `${statusLabel(p)} · 上次心跳: ${p.lastHeartbeat ? new Date(p.lastHeartbeat).toLocaleString() : '—'} · 模型: ${p.lastModel ?? '—'}`,
+
+  const pauseBtn = el('button', {
+    className: 'btn' + (p.paused ? '' : ' primary'),
+    onclick: () => p.paused ? resumeProject() : pauseProject(),
+  }, p.paused ? `resume (${p.pauseReason || '已暂停'})` : 'pause loop');
+
+  c.appendChild(el('div', { className: 'detail-header' },
+    el('div', null,
+      el('div', { className: 'title-line' },
+        el('span', { className: `dot ${p.online}` }),
+        el('h2', null, p.name),
+      ),
+      el('div', { className: 'meta' },
+        `${statusLabel(p)} · 心跳 ${p.lastHeartbeat ? new Date(p.lastHeartbeat).toLocaleString() : '—'} · 模型 ${p.lastModel ?? '—'}`,
+      ),
+    ),
+    el('div', { className: 'pause-wrap' + (p.paused ? ' paused' : '') }, pauseBtn),
   ));
 
   if (p.currentTask) {
@@ -132,23 +168,20 @@ function renderDetail() {
       el('div', { className: 'label' }, '正在执行'),
       el('div', { className: 'title' }, `#${p.currentTask.id} ${p.currentTask.desc}`),
       el('div', { className: 'tags' },
-        el('span', { className: 'tag' }, `scope: ${p.currentTask.scope ?? '—'}`),
-        el('span', { className: 'tag' }, `优先级: ${p.currentTask.priority ?? '—'}`),
+        el('span', { className: 'chip' }, p.currentTask.scope ?? '—'),
+        el('span', { className: `chip prio-${p.currentTask.priority || '中'}` }, p.currentTask.priority ?? '—'),
       ),
     ));
   }
 
-  c.appendChild(renderGroup('进行中', 'in_progress', tasks.in_progress));
-  c.appendChild(renderGroup('待办', 'todo', tasks.todo));
-  c.appendChild(renderGroup('待 review', 'review', tasks.review));
-  c.appendChild(renderGroup('阻塞', 'blocked', tasks.blocked));
-  c.appendChild(renderGroup('今日完成', 'done_today', tasks.done_today));
+  c.appendChild(el('div', { className: 'kanban' },
+    renderColumn('待办', 'todo', tasks.todo),
+    renderColumn('进行中', 'in_progress', tasks.in_progress),
+    renderColumn('待 review', 'review', tasks.review),
+    renderColumn('阻塞', 'blocked', tasks.blocked),
+  ));
 
-  const pauseBtn = el('button', {
-    className: 'btn primary',
-    onclick: () => p.paused ? resumeProject() : pauseProject(),
-  }, p.paused ? `resume (原因: ${p.pauseReason})` : 'pause loop');
-  c.appendChild(el('div', { className: 'pause-bar' + (p.paused ? ' paused' : '') }, pauseBtn));
+  c.appendChild(renderDoneStrip(tasks.done_today));
 }
 
 async function refreshProjects() {
