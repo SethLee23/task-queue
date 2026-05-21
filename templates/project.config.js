@@ -50,4 +50,12 @@ module.exports = {
   },
 
   autoPush: false,
+
+  /**
+   * loop 空转/等待时的睡眠间隔（秒）。
+   * - 默认 270s = 4.5 分钟，刚好在 Anthropic prompt cache 5min TTL 内
+   * - 范围 [60, 3600]，调大省 token / 调小响应更快
+   * - 影响 loop-prompt Step 5 的 idle 和 review/blocked 两种等待
+   */
+  idleSleepSeconds: 270,
 };

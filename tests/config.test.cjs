@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { loadProjectConfig } = require('../lib/config.cjs');
+const { loadProjectConfig, getIdleSleepSeconds } = require('../lib/config.cjs');
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'task-queue-cfg-'));
 after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
@@ -52,4 +52,31 @@ test('loadProjectConfig 缺 commitMessage 抛错', () => {
     inferModule: () => 'x',
   };`);
   assert.throws(() => loadProjectConfig(proj), /缺少字段 commitMessage/);
+});
+
+test('getIdleSleepSeconds 缺字段 → 默认 270', () => {
+  assert.equal(getIdleSleepSeconds({}), 270);
+});
+
+test('getIdleSleepSeconds null/undefined → 默认 270', () => {
+  assert.equal(getIdleSleepSeconds({ idleSleepSeconds: null }), 270);
+  assert.equal(getIdleSleepSeconds({ idleSleepSeconds: undefined }), 270);
+});
+
+test('getIdleSleepSeconds 非数字 → 默认 270', () => {
+  assert.equal(getIdleSleepSeconds({ idleSleepSeconds: 'abc' }), 270);
+  assert.equal(getIdleSleepSeconds({ idleSleepSeconds: NaN }), 270);
+});
+
+test('getIdleSleepSeconds 合法数字 → 透传 + 取整', () => {
+  assert.equal(getIdleSleepSeconds({ idleSleepSeconds: 600 }), 600);
+  assert.equal(getIdleSleepSeconds({ idleSleepSeconds: 270.7 }), 271);
+  assert.equal(getIdleSleepSeconds({ idleSleepSeconds: '900' }), 900);
+});
+
+test('getIdleSleepSeconds 越界 → clamp 到 [60, 3600]', () => {
+  assert.equal(getIdleSleepSeconds({ idleSleepSeconds: 0 }), 60);
+  assert.equal(getIdleSleepSeconds({ idleSleepSeconds: 30 }), 60);
+  assert.equal(getIdleSleepSeconds({ idleSleepSeconds: 99999 }), 3600);
+  assert.equal(getIdleSleepSeconds({ idleSleepSeconds: -100 }), 60);
 });

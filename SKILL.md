@@ -20,6 +20,7 @@ description: 任务队列自动化 — 用户在 Excel 加任务，配合 /loop 
 | `/task-queue dashboard` / "启动面板" / "打开控制台" | 跑 `dashboard` 启动 Web 服务，告知 URL |
 | "暂停队列" / "pause loop" | 跑 `dashboard pause <slug>` 或提示在面板操作 |
 | "恢复队列" / "resume loop" | 跑 `dashboard resume <slug>` 或提示在面板操作 |
+| "立即执行" / "马上扫" / "wake now" | 在面板点 ⚡ 立即执行，或 POST `/api/projects/<slug>/wake-now`；loop 在 ≤ idleSleepSeconds（默认 270s）内响应 |
 
 ## §init 流程
 
@@ -136,6 +137,7 @@ node ~/.claude/skills/task-queue/tasks.cjs add-row /path/proj "登录按钮没�
 | `status <root>` | 输出 `{todo, in_progress, review, blocked, done_today}` |
 | `sweep <root>` | 把已完成/跳过剪到已完结 sheet |
 | `recover <root>` | crash recovery |
+| `clear-wake <root>` | 清除 wake-now 旗子（loop 在 Step 0.5 自动调，正常流程不需要手动用） |
 | `dashboard [serve\|register\|unregister\|list] [--port 5732] [--host 127.0.0.1]` | 启动本地 Web 面板 / 管理注册表 |
 | `heartbeat <root> [--phase <executing\|idle\|sleeping>]` | 兜底手工写心跳（claim/done 等已自动写，正常流程不需要调） |
 
@@ -164,6 +166,17 @@ node ~/.claude/skills/task-queue/tasks.cjs dashboard
 - 点 "改优先级" 调整待办的高/中/低
 - 点 "pause" 暂停 loop（正在执行的任务跑完后停下；下一轮 next 不取）
 - 点 "resume" 恢复
+- 点 "⚡ 立即执行" 让 loop 在 ≤ `idleSleepSeconds`（默认 270s）内立刻扫一次任务表。paused/offline/missing 状态下按钮 disabled
+
+### idleSleepSeconds：响应延迟与成本平衡
+
+loop 空转/等待时的 sleep 间隔由 `.tasks/project.config.js` 的 `idleSleepSeconds` 字段控制（范围 [60, 3600]，默认 270）：
+
+- **默认 270s**：刚好在 Anthropic prompt cache 5 分钟 TTL 内；"立即执行"按钮响应延迟 ≤ 270s
+- **调大省 token**（如 1200 / 1800 / 3600）：响应慢，但显著省 cache 重建开销
+- **调小更快**（如 60 / 120）：响应快，但每次 sleep < TTL 时 cache 仍命中，超过即每轮 cache miss
+
+成本量级估算（Opus 4.7、8h/天在线、4h idle）：270s 默认 ≈ $200/月增量 vs 3600s。如果不在意延迟，调到 1200s 起即可显著省。
 
 ### 多项目聚合
 

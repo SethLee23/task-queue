@@ -249,6 +249,17 @@ function renderDetail() {
     onclick: () => p.paused ? resumeProject() : pauseProject(),
   }, p.paused ? `resume (${p.pauseReason || '已暂停'})` : 'pause loop');
 
+  const wakeDisabled = p.paused || p.online === 'offline' || p.online === 'missing' || p.wakeNow;
+  const wakeBtn = el('button', {
+    className: 'btn',
+    disabled: wakeDisabled,
+    title: p.paused ? '已暂停，先 resume 再立即执行'
+      : (p.online === 'offline' || p.online === 'missing') ? 'loop 未运行'
+      : p.wakeNow ? '已发出立即执行请求，等 loop 响应'
+      : '让 loop 在下次唤醒时（≤ idleSleepSeconds）立刻扫一次任务',
+    onclick: () => wakeNowProject(),
+  }, p.wakeNow ? '⏳ 唤醒中…' : '⚡ 立即执行');
+
   const addBtn = el('button', {
     className: 'btn',
     disabled: !(state.detail.scopes && state.detail.scopes.length > 0),
@@ -272,7 +283,7 @@ function renderDetail() {
         `${statusLabel(p)} · 心跳 ${p.lastHeartbeat ? new Date(p.lastHeartbeat).toLocaleString() : '—'} · 模型 ${p.lastModel ?? '—'}`,
       ),
     ),
-    el('div', { className: 'header-actions' }, addBtn, loopBtn, pauseBtn),
+    el('div', { className: 'header-actions' }, addBtn, loopBtn, wakeBtn, pauseBtn),
   ));
 
   if (p.currentTask) {
@@ -696,6 +707,11 @@ async function pauseProject() {
 
 async function resumeProject() {
   await postAction(`/api/projects/${state.selectedSlug}/resume`);
+  await refreshProjects();
+}
+
+async function wakeNowProject() {
+  await postAction(`/api/projects/${state.selectedSlug}/wake-now`, {});
   await refreshProjects();
 }
 

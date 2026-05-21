@@ -18,7 +18,7 @@ function ensureDeps() {
 const KNOWN_COMMANDS = [
   'detect', 'init-write', 'next', 'claim', 'done', 'review',
   'block', 'reply', 'status', 'sweep', 'recover', 'add-row', 'test-push',
-  'dashboard', 'heartbeat',
+  'dashboard', 'heartbeat', 'clear-wake',
 ];
 
 /** 不需要 <project-root> 参数的命令集合 */

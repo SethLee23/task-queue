@@ -10,6 +10,7 @@ const { readRows, withWorkbook, SHEET_IN_PROGRESS, SHEET_ARCHIVED, colIndex } = 
 const { STATES, PRIORITY_ORDER } = require('../lib/states.cjs');
 const { readHeartbeat } = require('../lib/heartbeat.cjs');
 const { readPaused, setPaused, clearPaused } = require('../lib/paused.cjs');
+const { readWakeNow, setWakeNow } = require('../lib/wake.cjs');
 const { localDateStr } = require('../lib/datetime.cjs');
 const { loadProjectConfig } = require('../lib/config.cjs');
 const { addRowCore } = require('./add-row.cjs');
@@ -174,6 +175,28 @@ async function handleResume(req, res, rawSlug) {
   if (!entry) return sendJson(res, 404, { error: 'project not found' });
 
   clearPaused(entry.root);
+  sendJson(res, 200, { ok: true });
+}
+
+/**
+ * 处理 POST /api/projects/:slug/wake-now
+ * body: { reason? }  写 wake-now 旗子，reason 默认"面板立即执行"
+ * 旗子在 loop 下一次唤醒（间隔由 idleSleepSeconds 控制）时被消费，
+ * 实际响应延迟 ≤ idleSleepSeconds 秒。
+ * @param {http.IncomingMessage} req
+ * @param {http.ServerResponse} res
+ * @param {string} rawSlug
+ */
+async function handleWakeNow(req, res, rawSlug) {
+  const slug = decodeURIComponent(rawSlug);
+  if (!SLUG_RE.test(slug)) return sendJson(res, 400, { error: 'invalid slug format' });
+
+  const entry = registryList().find(p => p.slug === slug);
+  if (!entry) return sendJson(res, 404, { error: 'project not found' });
+
+  const body = await readJsonBody(req).catch(() => ({}));
+  const reason = (body && body.reason) ? String(body.reason) : '面板立即执行';
+  setWakeNow(entry.root, reason);
   sendJson(res, 200, { ok: true });
 }
 
@@ -388,6 +411,8 @@ async function aggregateProject(entry) {
       lastModel: null,
       paused: false,
       pauseReason: null,
+      wakeNow: false,
+      wakeNowReason: null,
       counts: { todo: 0, in_progress: 0, review: 0, blocked: 0, done_today: 0 },
       currentTask: null,
       lastFinished: null,
@@ -413,6 +438,7 @@ async function aggregateProject(entry) {
 
   const hb = readHeartbeat(root);
   const pauseReason = readPaused(root);
+  const wakeReason = readWakeNow(root);
 
   // currentTask：补充 scope 和 priority，从 in_progress sheet 中匹配
   let currentTask = null;
@@ -441,6 +467,8 @@ async function aggregateProject(entry) {
     lastModel: hb ? (hb.model ?? null) : null,
     paused: pauseReason !== null,
     pauseReason: pauseReason,
+    wakeNow: wakeReason !== null,
+    wakeNowReason: wakeReason,
     counts,
     currentTask,
     lastFinished,
@@ -601,6 +629,12 @@ function handle(req, res) {
   const resumeM = pathname.match(/^\/api\/projects\/([^/]+)\/resume$/);
   if (resumeM && req.method === 'POST') {
     handleResume(req, res, resumeM[1]).catch(err => sendJson(res, 500, { error: String(err.message) }));
+    return;
+  }
+
+  const wakeM = pathname.match(/^\/api\/projects\/([^/]+)\/wake-now$/);
+  if (wakeM && req.method === 'POST') {
+    handleWakeNow(req, res, wakeM[1]).catch(err => sendJson(res, 500, { error: String(err.message) }));
     return;
   }
 

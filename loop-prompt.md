@@ -18,15 +18,33 @@ node ~/.claude/skills/task-queue/tasks.cjs recover ${PROJECT_ROOT}
 
 如果输出 `recovered > 0`，说明上次有任务被中断已重新排队。
 
-## Step 0.5: 检查是否被面板暂停
+## Step 0.1: 上报模型 ID（面板显示用）
+
+从系统提示中读取当前会话的模型精确 ID（例如 `claude-opus-4-7` / `claude-sonnet-4-6` / `claude-haiku-4-5-20251001`），写入 heartbeat：
+
+```
+node ~/.claude/skills/task-queue/tasks.cjs heartbeat ${PROJECT_ROOT} --model <claude-model-id>
+```
+
+每轮唤醒都跑一次（成本极低，覆盖会话切换/模型升级场景）。dashboard 会读这个字段显示"模型 xxx"。
+
+## Step 0.5: 检查暂停 & 唤醒旗子
 
 ```
 node ~/.claude/skills/task-queue/tasks.cjs status ${PROJECT_ROOT}
 ```
 
-如果输出含 `"paused": true`，跳到 Step 5（决定下次唤醒），不执行 next/claim。
+读输出：
 
-设计意图：面板的 pause 只影响"取下一条"，不打断正在执行的任务。
+- `"paused": true` → 跳到 Step 5（不执行 next/claim）
+- `"wakeNow": true`（无论 paused 与否）→ 调
+  ```
+  node ~/.claude/skills/task-queue/tasks.cjs clear-wake ${PROJECT_ROOT}
+  ```
+  然后正常继续（旗子仅用作 UI 反馈/防误点，清掉避免下轮误判）
+- 记下 `idleSleepSeconds` 字段值（Step 5 要用，默认 270）
+
+设计意图：面板的 pause 只影响"取下一条"，不打断正在执行的任务；wake-now 旗子是 dashboard "⚡ 立即执行" 按钮触发的，loop 见到后只需消费旗子，实际响应延迟由 idleSleepSeconds 控制。
 
 ## Step 1: 取下一条任务
 
@@ -137,9 +155,11 @@ node ~/.claude/skills/task-queue/tasks.cjs test-push "任务 #<id> <短结果>: 
 node ~/.claude/skills/task-queue/tasks.cjs status ${PROJECT_ROOT}
 ```
 
+读 `idleSleepSeconds`（Step 0.5 已读过可直接复用，默认 270；范围 [60, 3600]）。
+
 - `todo > 0` → 还有积压，立刻回 Step 1 继续（不睡）
-- `todo == 0 && (review > 0 || blocked > 0)` → `ScheduleWakeup 3600s "等用户处理 review/blocked"`
-- 全 0 → `ScheduleWakeup 3600s "队列空"`
+- `todo == 0 && (review > 0 || blocked > 0)` → `ScheduleWakeup <idleSleepSeconds>s "等用户处理 review/blocked（cap 内可被面板立即执行唤醒）"`
+- 全 0 → `ScheduleWakeup <idleSleepSeconds>s "队列空（cap 内可被面板立即执行唤醒）"`
 
 ## 异常路径
 
