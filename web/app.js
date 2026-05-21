@@ -78,7 +78,11 @@ function renderProjects() {
 
   if (hiddenCount > 0) {
     list.appendChild(el('div', { className: 'hidden-hint' },
-      `${hiddenCount} 个失联项目已隐藏（CLI: dashboard unregister）`,
+      el('span', null, `${hiddenCount} 个失联项目已隐藏`),
+      el('button', {
+        className: 'btn',
+        onclick: () => cleanupMissing(hiddenCount),
+      }, '清理'),
     ));
   }
 }
@@ -239,6 +243,16 @@ async function pauseProject() {
 async function resumeProject() {
   await postAction(`/api/projects/${state.selectedSlug}/resume`);
   await refreshProjects();
+}
+
+async function cleanupMissing(count) {
+  if (!confirm(`确认从注册表移除 ${count} 个失联项目？\n（不会删除任何磁盘文件，仅清理注册表条目）`)) return;
+  const r = await postAction('/api/cleanup-missing');
+  if (r.ok) {
+    await refreshProjects();
+  } else {
+    alert(`清理失败: ${r.body?.error || r.status}`);
+  }
 }
 
 refreshProjects();

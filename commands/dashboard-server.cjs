@@ -189,6 +189,24 @@ async function handleDelete(_req, res, rawSlug) {
 }
 
 /**
+ * 处理 POST /api/cleanup-missing
+ * 遍历注册表，把 root 不存在或 .tasks 目录缺失的条目移出注册表，
+ * 不触碰任何文件系统目录内容。
+ * @param {http.IncomingMessage} _req
+ * @param {http.ServerResponse} res
+ */
+async function handleCleanupMissing(_req, res) {
+  const removed = [];
+  for (const entry of registryList()) {
+    if (!fs.existsSync(entry.root) || !fs.existsSync(path.join(entry.root, '.tasks'))) {
+      registryRemove(entry.slug);
+      removed.push({ slug: entry.slug, root: entry.root });
+    }
+  }
+  sendJson(res, 200, { ok: true, removed, count: removed.length });
+}
+
+/**
  * 判断 ftime 是否属于今天（本地时区）。
  * ftime 可能是 Date 对象、ISO string 或空值。
  * @param {unknown} ftime
@@ -406,6 +424,11 @@ function handle(req, res) {
 
   if (pathname === '/api/projects' && req.method === 'GET') {
     handleGetProjects(res).catch(err => sendJson(res, 500, { error: String(err.message) }));
+    return;
+  }
+
+  if (pathname === '/api/cleanup-missing' && req.method === 'POST') {
+    handleCleanupMissing(req, res).catch(err => sendJson(res, 500, { error: String(err.message) }));
     return;
   }
 

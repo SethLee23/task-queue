@@ -54,13 +54,18 @@ body {
 
 .hidden-hint {
   margin: 12px 10px 0;
-  padding: 6px 8px;
+  padding: 8px;
   font-size: 10px;
   color: var(--text-dim);
   border-top: 1px dashed var(--border);
-  opacity: 0.7;
+  opacity: 0.85;
   line-height: 1.4;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
 }
+.hidden-hint .btn { padding: 2px 8px; font-size: 10px; flex-shrink: 0; }
 
 .dot {
   display: inline-block;
