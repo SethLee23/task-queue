@@ -98,3 +98,102 @@ test('GET /api/projects paused 标志反映 paused=true', async () => {
   assert.equal(p.paused, true);
   assert.equal(p.pauseReason, '面板暂停了');
 });
+
+test('GET /api/projects online 推导：无心跳 → offline，有新心跳 → active', async () => {
+  const proj = await mkProjWithRow([]);
+  registryAdd(proj);
+  if (!inst) inst = await startServer({ port: 0 });
+
+  // 无心跳时应为 offline
+  let res = await fetch(`http://127.0.0.1:${inst.port}/api/projects`);
+  let body = await res.json();
+  let p = body.projects.find(x => x.root === proj);
+  assert.equal(p.online, 'offline');
+  assert.ok(['active', 'idle', 'offline', 'missing'].includes(p.online), `online 值必须是合法枚举，得到 ${p.online}`);
+
+  // 写入新心跳（phase=executing），应推导为 active
+  writeHeartbeat(proj, { phase: 'executing', currentTaskId: null });
+  res = await fetch(`http://127.0.0.1:${inst.port}/api/projects`);
+  body = await res.json();
+  p = body.projects.find(x => x.root === proj);
+  assert.equal(p.online, 'active');
+});
+
+test('GET /api/projects registeredAt 在响应里透传', async () => {
+  const proj = await mkProjWithRow([]);
+  const entry = registryAdd(proj);
+  if (!inst) inst = await startServer({ port: 0 });
+
+  const res = await fetch(`http://127.0.0.1:${inst.port}/api/projects`);
+  const body = await res.json();
+  const p = body.projects.find(x => x.root === proj);
+  assert.ok(p.registeredAt, 'registeredAt 不能缺失');
+  assert.equal(p.registeredAt, entry.registeredAt);
+});
+
+test('GET /api/projects lastHeartbeat 和 lastModel 字段正确', async () => {
+  const proj = await mkProjWithRow([]);
+  registryAdd(proj);
+  process.env.CLAUDE_MODEL = 'claude-test-model';
+  writeHeartbeat(proj, { phase: 'idle' });
+  if (!inst) inst = await startServer({ port: 0 });
+
+  const res = await fetch(`http://127.0.0.1:${inst.port}/api/projects`);
+  const body = await res.json();
+  const p = body.projects.find(x => x.root === proj);
+  assert.ok(p.lastHeartbeat, 'lastHeartbeat 不能为 null/undefined');
+  assert.ok(typeof p.lastHeartbeat === 'string', 'lastHeartbeat 应为 ISO 字符串');
+  assert.notEqual(p.lastModel, undefined, 'lastModel 不能为 undefined');
+  assert.equal(p.lastModel, 'claude-test-model');
+  delete process.env.CLAUDE_MODEL;
+});
+
+test('GET /api/projects lastFinished 在 hb.lastFinishedId 存在时形为 {id, at}', async () => {
+  const proj = await mkProjWithRow([]);
+  registryAdd(proj);
+  const finishedAt = new Date().toISOString();
+  writeHeartbeat(proj, { phase: 'idle', lastFinishedId: 42, lastFinishedAt: finishedAt });
+  if (!inst) inst = await startServer({ port: 0 });
+
+  const res = await fetch(`http://127.0.0.1:${inst.port}/api/projects`);
+  const body = await res.json();
+  const p = body.projects.find(x => x.root === proj);
+  assert.ok(p.lastFinished, 'lastFinished 不能为 null');
+  assert.equal(p.lastFinished.id, 42);
+  assert.equal(p.lastFinished.at, finishedAt);
+});
+
+test('GET /api/projects currentTask 包含 scope 和 priority', async () => {
+  const proj = await mkProjWithRow([
+    { id: 7, desc: 'scope task', scope: 'core', priority: '高', status: '进行中' },
+  ]);
+  registryAdd(proj);
+  writeHeartbeat(proj, { phase: 'executing', currentTaskId: 7, currentTaskDesc: 'scope task' });
+  if (!inst) inst = await startServer({ port: 0 });
+
+  const res = await fetch(`http://127.0.0.1:${inst.port}/api/projects`);
+  const body = await res.json();
+  const p = body.projects.find(x => x.root === proj);
+  assert.ok(p.currentTask, 'currentTask 不能为 null');
+  assert.equal(p.currentTask.id, 7);
+  assert.equal(p.currentTask.scope, 'core');
+  assert.equal(p.currentTask.priority, '高');
+});
+
+test('GET /api/projects missing 时响应保留 registry 字段', async () => {
+  const proj = fs.mkdtempSync(path.join(tmpDir, 'miss-full-'));
+  const entry = registryAdd(proj);
+  fs.rmSync(proj, { recursive: true });
+  if (!inst) inst = await startServer({ port: 0 });
+
+  const res = await fetch(`http://127.0.0.1:${inst.port}/api/projects`);
+  const body = await res.json();
+  const p = body.projects.find(x => x.root === proj);
+  assert.equal(p.online, 'missing');
+  assert.equal(p.slug, entry.slug);
+  assert.equal(p.name, entry.name);
+  assert.equal(p.registeredAt, entry.registeredAt);
+  assert.equal(p.currentTask, null);
+  assert.equal(p.lastFinished, null);
+  assert.equal(p.lastHeartbeat, null);
+});
