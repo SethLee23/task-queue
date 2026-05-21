@@ -17,6 +17,9 @@ description: 任务队列自动化 — 用户在 Excel 加任务，配合 /loop 
 | "测试推送" / "测下通知" / "试试桌面通知" | 跑 `test-push` 命令验证桌面通道 |
 | "扫一下任务表" / "看看任务表" | 跑 `status` 命令展示队列概况 |
 | "处理一条任务" | 跑 1 轮 Step 1-4.5（不进 loop） |
+| `/task-queue dashboard` / "启动面板" / "打开控制台" | 跑 `dashboard` 启动 Web 服务，告知 URL |
+| "暂停队列" / "pause loop" | 跑 `dashboard pause <slug>` 或提示在面板操作 |
+| "恢复队列" / "resume loop" | 跑 `dashboard resume <slug>` 或提示在面板操作 |
 
 ## §init 流程
 
@@ -133,6 +136,8 @@ node ~/.claude/skills/task-queue/tasks.cjs add-row /path/proj "登录按钮没�
 | `status <root>` | 输出 `{todo, in_progress, review, blocked, done_today}` |
 | `sweep <root>` | 把已完成/跳过剪到已完结 sheet |
 | `recover <root>` | crash recovery |
+| `dashboard [serve\|register\|unregister\|list] [--port 5732] [--host 127.0.0.1]` | 启动本地 Web 面板 / 管理注册表 |
+| `heartbeat <root> [--phase <executing\|idle\|sleeping>]` | 兜底手工写心跳（claim/done 等已自动写，正常流程不需要调） |
 
 ## 必读约束
 
@@ -142,3 +147,32 @@ node ~/.claude/skills/task-queue/tasks.cjs add-row /path/proj "登录按钮没�
 - 必须在 Step 0 跑 recover
 - 严守 CLAUDE.md 项目规范
 - 安全护栏：禁 push / 禁 reset --hard / 禁 --no-verify / 禁触 scope 外目录
+
+## §dashboard 流程
+
+### 启动面板
+
+```bash
+node ~/.claude/skills/task-queue/tasks.cjs dashboard
+```
+
+默认 `127.0.0.1:5732`。打开浏览器访问该 URL 即可看到所有已注册项目的实时状态。
+
+面板能力：
+- 看每个项目的 `phase`（运行中/等待中/离线）+ 当前任务 desc
+- 点 "skip" 跳过一条待办
+- 点 "改优先级" 调整待办的高/中/低
+- 点 "pause" 暂停 loop（正在执行的任务跑完后停下；下一轮 next 不取）
+- 点 "resume" 恢复
+
+### 多项目聚合
+
+`init-write` 自动把项目加入 `~/.task-queue/projects.json` 注册表。早期 init 时漏注册的项目可手动补：
+
+```bash
+node ~/.claude/skills/task-queue/tasks.cjs dashboard register /path/to/project
+```
+
+### 安全
+
+默认仅监听 loopback。若需局域网访问：`--host 0.0.0.0`，但无认证，请勿暴露公网。
