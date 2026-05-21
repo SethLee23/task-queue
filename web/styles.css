@@ -52,6 +52,16 @@ body {
 .project-item .name { font-weight: 500; }
 .project-item .summary { color: var(--text-dim); font-size: 11px; margin-top: 2px; }
 
+.hidden-hint {
+  margin: 12px 10px 0;
+  padding: 6px 8px;
+  font-size: 10px;
+  color: var(--text-dim);
+  border-top: 1px dashed var(--border);
+  opacity: 0.7;
+  line-height: 1.4;
+}
+
 .dot {
   display: inline-block;
   width: 7px; height: 7px;

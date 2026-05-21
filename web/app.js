@@ -56,21 +56,30 @@ function statusLabel(p) {
 function renderProjects() {
   const list = $('#project-list');
   list.innerHTML = '';
-  if (state.projects.length === 0) {
+  const visible = state.projects.filter(p => p.online !== 'missing');
+  const hiddenCount = state.projects.length - visible.length;
+
+  if (visible.length === 0) {
     list.appendChild(el('div', { className: 'project-item' }, '（无已注册项目）'));
-    return;
+  } else {
+    for (const p of visible) {
+      const item = el('div', {
+        className: 'project-item' + (p.slug === state.selectedSlug ? ' active' : ''),
+        onclick: () => selectProject(p.slug),
+      },
+        el('div', { className: 'name' },
+          el('span', { className: `dot ${p.online}` }), p.name,
+        ),
+        el('div', { className: 'summary' }, statusLabel(p)),
+      );
+      list.appendChild(item);
+    }
   }
-  for (const p of state.projects) {
-    const item = el('div', {
-      className: 'project-item' + (p.slug === state.selectedSlug ? ' active' : ''),
-      onclick: () => selectProject(p.slug),
-    },
-      el('div', { className: 'name' },
-        el('span', { className: `dot ${p.online}` }), p.name,
-      ),
-      el('div', { className: 'summary' }, statusLabel(p)),
-    );
-    list.appendChild(item);
+
+  if (hiddenCount > 0) {
+    list.appendChild(el('div', { className: 'hidden-hint' },
+      `${hiddenCount} 个失联项目已隐藏（CLI: dashboard unregister）`,
+    ));
   }
 }
 

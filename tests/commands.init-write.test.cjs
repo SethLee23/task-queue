@@ -10,7 +10,16 @@ const os = require('node:os');
 const initWrite = require('../commands/init-write.cjs');
 
 const tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), 'task-queue-init-write-'));
-after(() => fs.rmSync(tmpBase, { recursive: true, force: true }));
+
+// 把整个测试文件的 registry 写入隔离到 tmp，防止污染 ~/.task-queue/projects.json
+process.env.TASK_QUEUE_REGISTRY_PATH = path.join(tmpBase, 'registry.json');
+delete require.cache[require.resolve('../lib/registry.cjs')];
+
+after(() => {
+  fs.rmSync(tmpBase, { recursive: true, force: true });
+  delete process.env.TASK_QUEUE_REGISTRY_PATH;
+  delete require.cache[require.resolve('../lib/registry.cjs')];
+});
 
 /**
  * 捕获 process.stdout.write 输出，返回拼接后的字符串。
@@ -172,10 +181,6 @@ test('inferModule 正确性：web/src/view/Router/ 命中 "路由管理"', async
 });
 
 test('init-write 末尾自动注册到 registry，输出含 registered 字段', async () => {
-  process.env.TASK_QUEUE_REGISTRY_PATH = path.join(tmpBase, `reg-${Date.now()}.json`);
-  // 清除 registry 模块缓存，确保读取新 env
-  delete require.cache[require.resolve('../lib/registry.cjs')];
-
   const proj = fs.mkdtempSync(path.join(tmpBase, 'init-reg-'));
   fs.writeFileSync(path.join(proj, 'package.json'), JSON.stringify({ name: 'x', version: '1.0.0' }));
 
@@ -189,8 +194,6 @@ test('init-write 末尾自动注册到 registry，输出含 registered 字段', 
   const { list } = require('../lib/registry.cjs');
   const roots = list().map(p => p.root);
   assert.ok(roots.includes(proj), 'registry 应包含该 project');
-
-  delete process.env.TASK_QUEUE_REGISTRY_PATH;
 });
 
 test('inferModule 反向字典含 Settings 和 Global 双 key（均映射"全局设置"）', async () => {
