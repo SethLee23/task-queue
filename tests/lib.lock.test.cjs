@@ -53,3 +53,15 @@ test('stale 锁（info.ts > 30s 前）会被自动接管', async () => {
   await acquireLock(lockDir, { timeoutMs: 200, intervalMs: 50 });
   await releaseLock(lockDir);
 });
+
+test('isStale 不会误杀刚 mkdir 但 info.json 尚未写入的锁', async () => {
+  const lockDir = path.join(tmpDir, 'lock-race');
+  fs.mkdirSync(lockDir);
+  const t0 = Date.now();
+  await assert.rejects(
+    () => acquireLock(lockDir, { timeoutMs: 200, intervalMs: 50 }),
+    err => err instanceof LockTimeoutError,
+  );
+  assert.ok(Date.now() - t0 >= 150, '应等待 timeoutMs 而不是立刻接管刚 mkdir 的锁');
+  fs.rmSync(lockDir, { recursive: true, force: true });
+});
