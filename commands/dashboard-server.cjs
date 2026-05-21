@@ -4,11 +4,11 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const url = require('node:url');
-const { list: registryList } = require('../lib/registry.cjs');
+const { list: registryList, remove: registryRemove } = require('../lib/registry.cjs');
 const { readRows, withWorkbook, SHEET_IN_PROGRESS, SHEET_ARCHIVED, colIndex } = require('../lib/workbook.cjs');
 const { STATES, PRIORITY_ORDER } = require('../lib/states.cjs');
 const { readHeartbeat } = require('../lib/heartbeat.cjs');
-const { readPaused } = require('../lib/paused.cjs');
+const { readPaused, setPaused, clearPaused } = require('../lib/paused.cjs');
 const { localDateStr } = require('../lib/datetime.cjs');
 
 const WEB_ROOT = path.join(__dirname, '..', 'web');
@@ -132,6 +132,59 @@ async function handlePriority(req, res, rawSlug) {
 
   if (result.notFound) return sendJson(res, 404, { error: 'task not found' });
   if (result.conflict) return sendJson(res, 409, { error: 'task is not in TODO state' });
+  sendJson(res, 200, { ok: true });
+}
+
+/**
+ * 处理 POST /api/projects/:slug/pause
+ * body: { reason? }  写 loop-paused 文件，reason 为空时默认"面板暂停"
+ * @param {http.IncomingMessage} req
+ * @param {http.ServerResponse} res
+ * @param {string} rawSlug
+ */
+async function handlePause(req, res, rawSlug) {
+  const slug = decodeURIComponent(rawSlug);
+  if (!SLUG_RE.test(slug)) return sendJson(res, 400, { error: 'invalid slug format' });
+
+  const entry = registryList().find(p => p.slug === slug);
+  if (!entry) return sendJson(res, 404, { error: 'project not found' });
+
+  const body = await readJsonBody(req).catch(() => ({}));
+  const reason = (body && body.reason) ? String(body.reason) : '面板暂停';
+  setPaused(entry.root, reason);
+  sendJson(res, 200, { ok: true });
+}
+
+/**
+ * 处理 POST /api/projects/:slug/resume
+ * 删除 loop-paused 文件，恢复运行
+ * @param {http.IncomingMessage} req
+ * @param {http.ServerResponse} res
+ * @param {string} rawSlug
+ */
+async function handleResume(req, res, rawSlug) {
+  const slug = decodeURIComponent(rawSlug);
+  if (!SLUG_RE.test(slug)) return sendJson(res, 400, { error: 'invalid slug format' });
+
+  const entry = registryList().find(p => p.slug === slug);
+  if (!entry) return sendJson(res, 404, { error: 'project not found' });
+
+  clearPaused(entry.root);
+  sendJson(res, 200, { ok: true });
+}
+
+/**
+ * 处理 DELETE /api/projects/:slug
+ * 从注册表移出项目，不触碰文件系统目录内容（幂等）
+ * @param {http.IncomingMessage} _req
+ * @param {http.ServerResponse} res
+ * @param {string} rawSlug
+ */
+async function handleDelete(_req, res, rawSlug) {
+  const slug = decodeURIComponent(rawSlug);
+  if (!SLUG_RE.test(slug)) return sendJson(res, 400, { error: 'invalid slug format' });
+
+  registryRemove(slug);
   sendJson(res, 200, { ok: true });
 }
 
@@ -368,7 +421,23 @@ function handle(req, res) {
     return;
   }
 
+  const pauseM = pathname.match(/^\/api\/projects\/([^/]+)\/pause$/);
+  if (pauseM && req.method === 'POST') {
+    handlePause(req, res, pauseM[1]).catch(err => sendJson(res, 500, { error: String(err.message) }));
+    return;
+  }
+
+  const resumeM = pathname.match(/^\/api\/projects\/([^/]+)\/resume$/);
+  if (resumeM && req.method === 'POST') {
+    handleResume(req, res, resumeM[1]).catch(err => sendJson(res, 500, { error: String(err.message) }));
+    return;
+  }
+
   const detailMatch = DETAIL_ROUTE_RE.exec(pathname);
+  if (detailMatch && req.method === 'DELETE') {
+    handleDelete(req, res, detailMatch[1]).catch(err => sendJson(res, 500, { error: String(err.message) }));
+    return;
+  }
   if (detailMatch && req.method === 'GET') {
     handleApiProjectDetail(res, detailMatch[1]).catch(err => sendJson(res, 500, { error: String(err.message) }));
     return;
