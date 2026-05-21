@@ -18,10 +18,11 @@ function ensureDeps() {
 const KNOWN_COMMANDS = [
   'detect', 'init-write', 'next', 'claim', 'done', 'review',
   'block', 'status', 'sweep', 'recover', 'add-row', 'test-push',
+  'dashboard', 'heartbeat',
 ];
 
 /** 不需要 <project-root> 参数的命令集合 */
-const COMMANDS_NOT_REQUIRING_PROJECT_ROOT = new Set(['detect', 'init-write', 'test-push']);
+const COMMANDS_NOT_REQUIRING_PROJECT_ROOT = new Set(['detect', 'init-write', 'test-push', 'dashboard']);
 
 async function main() {
   const [, , cmd, projectRoot, ...rest] = process.argv;
