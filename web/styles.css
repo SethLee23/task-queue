@@ -362,6 +362,12 @@ body {
   resize: vertical;
 }
 .modal-input:focus { outline: none; border-color: var(--accent); }
+.modal-input.loop-cmd-area {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  white-space: pre;
+  word-break: break-all;
+}
 .modal-error {
   color: var(--red);
   font-size: 11px;

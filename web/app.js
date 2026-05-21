@@ -7,6 +7,7 @@ const state = {
   doneCollapsed: true,
   collapsedCards: new Set(),
   addModal: null,
+  loopCmdModal: null,
 };
 
 const LONG_TEXT_THRESHOLD = 120;
@@ -224,6 +225,12 @@ function renderDetail() {
     title: state.detail.scopes && state.detail.scopes.length > 0 ? '' : 'project.config.js 缺失或无 scope',
   }, '+ 新增任务');
 
+  const loopBtn = el('button', {
+    className: 'btn',
+    onclick: () => openLoopCmdModal(),
+    title: '复制启动命令，粘贴到 terminal 即可启动 loop',
+  }, '▶ 启动 loop');
+
   c.appendChild(el('div', { className: 'detail-header' },
     el('div', null,
       el('div', { className: 'title-line' },
@@ -234,7 +241,7 @@ function renderDetail() {
         `${statusLabel(p)} · 心跳 ${p.lastHeartbeat ? new Date(p.lastHeartbeat).toLocaleString() : '—'} · 模型 ${p.lastModel ?? '—'}`,
       ),
     ),
-    el('div', { className: 'header-actions' }, addBtn, pauseBtn),
+    el('div', { className: 'header-actions' }, addBtn, loopBtn, pauseBtn),
   ));
 
   if (p.currentTask) {
@@ -258,6 +265,7 @@ function renderDetail() {
   c.appendChild(renderDoneStrip(tasks.done_today));
 
   renderAddModal();
+  renderLoopCmdModal();
 }
 
 function renderAddModal() {
@@ -368,6 +376,82 @@ async function submitAddRow() {
   } else {
     document.getElementById('modal-error').textContent = r.body?.error || `失败 (${r.status})`;
   }
+}
+
+async function openLoopCmdModal() {
+  state.loopCmdModal = { loading: true, command: '', error: '', copied: false };
+  renderLoopCmdModal();
+  try {
+    const r = await fetch(`/api/projects/${state.selectedSlug}/loop-command`);
+    const body = await r.json().catch(() => ({}));
+    if (r.ok) {
+      state.loopCmdModal = { loading: false, command: body.command || '', error: '', copied: false };
+    } else {
+      state.loopCmdModal = { loading: false, command: '', error: body.error || `失败 (${r.status})`, copied: false };
+    }
+  } catch (err) {
+    state.loopCmdModal = { loading: false, command: '', error: String(err.message), copied: false };
+  }
+  renderLoopCmdModal();
+}
+
+function closeLoopCmdModal() {
+  state.loopCmdModal = null;
+  renderLoopCmdModal();
+}
+
+async function copyLoopCommand() {
+  const m = state.loopCmdModal;
+  if (!m || !m.command) return;
+  try {
+    await navigator.clipboard.writeText(m.command);
+    m.copied = true;
+    renderLoopCmdModal();
+  } catch (err) {
+    m.error = '复制失败：' + err.message;
+    renderLoopCmdModal();
+  }
+}
+
+function renderLoopCmdModal() {
+  const existing = document.getElementById('loop-cmd-modal');
+  if (existing) existing.remove();
+  if (!state.loopCmdModal) return;
+
+  const m = state.loopCmdModal;
+  const cmdArea = el('textarea', {
+    className: 'modal-input loop-cmd-area',
+    readonly: '',
+    rows: 8,
+    placeholder: m.loading ? '生成中…' : '',
+  });
+  cmdArea.value = m.command || '';
+  cmdArea.addEventListener('focus', () => cmdArea.select());
+
+  const hint = el('div', { className: 'modal-error' },
+    m.error ? m.error : m.copied ? '✓ 已复制，去 terminal 粘贴即可启动' : '在项目目录下粘贴这条命令即可启动 loop',
+  );
+
+  const modal = el('div', {
+    id: 'loop-cmd-modal',
+    className: 'modal-backdrop',
+    onclick: e => { if (e.target.id === 'loop-cmd-modal') closeLoopCmdModal(); },
+  },
+    el('div', { className: 'modal' },
+      el('div', { className: 'modal-title' }, '启动 loop'),
+      el('label', { className: 'modal-label' }, '完整命令（已替换 PROJECT_ROOT）', cmdArea),
+      hint,
+      el('div', { className: 'modal-actions' },
+        el('button', { className: 'btn', onclick: closeLoopCmdModal }, '关闭'),
+        el('button', {
+          className: 'btn primary',
+          disabled: m.loading || !m.command,
+          onclick: copyLoopCommand,
+        }, m.copied ? '✓ 已复制' : '复制'),
+      ),
+    ),
+  );
+  document.body.appendChild(modal);
 }
 
 async function refreshProjects() {

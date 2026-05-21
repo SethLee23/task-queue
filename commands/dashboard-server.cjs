@@ -250,6 +250,46 @@ async function handleOpen(req, res) {
 }
 
 /**
+ * 把任意字符串包成 POSIX shell 安全的单引号字面量。
+ * 内部 ' 替换为 '\'' （结束 → 转义单引号 → 重新开始）。
+ * @param {string} s
+ * @returns {string}
+ */
+function shellSingleQuote(s) {
+  return "'" + String(s).replace(/'/g, "'\\''") + "'";
+}
+
+/**
+ * 处理 GET /api/projects/:slug/loop-command
+ * 读 loop-prompt.md，替换 ${PROJECT_ROOT}，拼成可粘贴到 terminal 的一条
+ * `cd '<root>' && claude '/loop ...'` 命令，前端用来一键复制。
+ * @param {http.ServerResponse} res
+ * @param {string} rawSlug
+ */
+async function handleLoopCommand(res, rawSlug) {
+  const slug = decodeURIComponent(rawSlug);
+  if (!SLUG_RE.test(slug)) return sendJson(res, 400, { error: 'invalid slug format' });
+
+  const entry = registryList().find(p => p.slug === slug);
+  if (!entry) return sendJson(res, 404, { error: 'project not found' });
+
+  const promptPath = path.join(__dirname, '..', 'loop-prompt.md');
+  let prompt;
+  try {
+    prompt = fs.readFileSync(promptPath, 'utf8');
+  } catch (err) {
+    return sendJson(res, 500, { error: `读取 loop-prompt.md 失败: ${err.message}` });
+  }
+  prompt = prompt.replace(/\$\{PROJECT_ROOT\}/g, entry.root);
+
+  const command =
+    `cd ${shellSingleQuote(entry.root)} && ` +
+    `claude ${shellSingleQuote('/loop ' + prompt)}`;
+
+  sendJson(res, 200, { command, projectRoot: entry.root });
+}
+
+/**
  * 处理 POST /api/cleanup-missing
  * 遍历注册表，把 root 不存在或 .tasks 目录缺失的条目移出注册表，
  * 不触碰任何文件系统目录内容。
@@ -533,6 +573,12 @@ function handle(req, res) {
   const addRowM = pathname.match(/^\/api\/projects\/([^/]+)\/add-row$/);
   if (addRowM && req.method === 'POST') {
     handleAddRow(req, res, addRowM[1]).catch(err => sendJson(res, 500, { error: String(err.message) }));
+    return;
+  }
+
+  const loopCmdM = pathname.match(/^\/api\/projects\/([^/]+)\/loop-command$/);
+  if (loopCmdM && req.method === 'GET') {
+    handleLoopCommand(res, loopCmdM[1]).catch(err => sendJson(res, 500, { error: String(err.message) }));
     return;
   }
 
