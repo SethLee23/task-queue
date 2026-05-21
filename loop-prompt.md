@@ -78,15 +78,28 @@ node ~/.claude/skills/task-queue/tasks.cjs block ${PROJECT_ROOT} <id> "<疑问>"
 
 先重试 1 次（rm -rf node_modules && npm install / 重新跑 build）。仍败按 4c 硬失败处理。
 
-## Step 4.5: 推送手机通知（必须，每条任务都推）
+## Step 4.5: 推送通知（必须，每条任务都推；两条通道都要发）
 
-无论 done/review/block 之后，必须调用 PushNotification：
+无论 done/review/block 之后，必须**并行调用两个推送通道** —— 单独哪一条都可能失效：
+
+### 通道 A：Claude 内置 PushNotification（手机/Remote Control）
 
 ```
 PushNotification(message: "任务 #<id> <短结果>: <desc 前 60 字>", status: "proactive")
 ```
 
-例：
+走 Claude Code 应用本身的通知通道，能同步到手机 Remote Control。**但在 macOS 15+ 上**，如果系统设置里没给 Claude Code 开通知权限、或权限被通知中心静默丢弃，本机就看不到桌面横幅。
+
+### 通道 B：桌面 dialog 兜底（osascript System Events，本机 100% 可见）
+
+```bash
+node ~/.claude/skills/task-queue/tasks.cjs test-push "任务 #<id> <短结果>: <desc 前 60 字>"
+```
+
+默认走 `system-events-dialog` 通道，弹一个浮在所有窗口最前的对话框，5 秒后自动消失。这条路径绕开通知中心 codesign 限制，是本机唯一稳定可见的桌面提醒方式（macOS 15.6 已验证 terminal-notifier / osascript display notification 都会被静默丢弃）。
+
+**两条都要发**，顺序不限。消息文案保持一致，例：
+
 - "任务 #3 已完成: 改 ReqConfig label 中文"
 - "任务 #5 待 review: 改了 core 热路径 resolveAgent"
 - "任务 #7 阻塞: web/src/foobar.tsx 不存在?"
@@ -105,9 +118,9 @@ node ~/.claude/skills/task-queue/tasks.cjs status ${PROJECT_ROOT}
 
 如果 tasks.cjs 任何命令退出码非 0 且 stderr 含 "task-queue 错误"：
 - 不前进任何状态
-- 推送 "task-queue 异常: <错误头部>，请检查 .tasks/logs/"
+- 推送 "task-queue 异常: <错误头部>，请检查 .tasks/logs/"（两条通道都发，同 Step 4.5）
 - `ScheduleWakeup 3600s "skill 异常等修复"`
 
 如果 Excel 文件被锁（命令输出含 "EAGAIN" 或类似）：
-- 推送 "Excel 正在打开，本轮跳过"
+- 推送 "Excel 正在打开，本轮跳过"（两条通道都发）
 - `ScheduleWakeup 60s "等 Excel 关闭"`
