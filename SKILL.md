@@ -14,6 +14,7 @@ description: 任务队列自动化 — 用户在 Excel 加任务，配合 /loop 
 | `/task-queue init` / "在这个项目接入任务队列" | 走 §init 流程 |
 | `/task-queue start` / "启动任务循环" / "开始干" | 走 §start 流程 |
 | `/task-queue add <desc>` / "加一条任务" | 走 §add 流程 |
+| "测试推送" / "测下通知" / "试试桌面通知" | 跑 `test-push` 命令验证桌面通道 |
 | "扫一下任务表" / "看看任务表" | 跑 `status` 命令展示队列概况 |
 | "处理一条任务" | 跑 1 轮 Step 1-4.5（不进 loop） |
 
@@ -123,6 +124,7 @@ node ~/.claude/skills/task-queue/tasks.cjs add-row /path/proj "登录按钮没�
 | `detect <root>` | 静态分析，输出 JSON |
 | `init-write <root> <answers-json>` | 落盘 .tasks/ 目录和 project.config.js |
 | `add-row <root> <desc> <scope> [priority] [note]` | 追加一条待办任务（id 留空，待 claim 时自动分配） |
+| `test-push [message]` | 触发 macOS 原生桌面通知，绕过 Claude 60s 反打扰；用于随时测试通道 |
 | `next <root>` | 输出下一条待办（按优先级排序） |
 | `claim <root> <id\|auto>` | 状态置进行中 |
 | `done <root> <id>` | 标完成，根据 config 决定 auto commit |
