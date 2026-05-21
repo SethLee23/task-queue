@@ -3,9 +3,19 @@
 <head>
   <meta charset="utf-8">
   <title>task-queue dashboard</title>
+  <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
-  <h1>task-queue dashboard</h1>
-  <p>v0.2.0 placeholder — 等 Task 15/16 实现真实 UI。</p>
+  <div id="app">
+    <aside id="sidebar">
+      <h1>task-queue</h1>
+      <div id="project-list">加载中...</div>
+    </aside>
+    <main id="detail">
+      <div id="detail-empty">从左侧选一个项目查看详情</div>
+      <div id="detail-content" style="display:none"></div>
+    </main>
+  </div>
+  <script src="/app.js"></script>
 </body>
 </html>
