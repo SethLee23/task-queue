@@ -44,25 +44,28 @@ test('reply 不带 resume：仅在 note 顶部追加 [reply ...] 块，状态不
     `note 格式应为时间戳 + 答复 + 分隔符 + 原 note，实际: ${row.note}`);
 });
 
-test('reply 带 resume：blocked → todo 且清空 question', async () => {
+test('reply 带 resume：blocked → todo 且 question 内容迁移进 note', async () => {
   const proj = await setupProject([{ ...baseRow, status: '阻塞-等答疑', question: '问题1?' }]);
   await replyCore(proj, { id: 1, reply: '解阻答复', resume: true });
 
   const rows = await readRows(path.join(proj, '.tasks', 'tasks.xlsx'), SHEET_IN_PROGRESS);
   const row = rows.find(r => String(r.id) === '1');
   assert.equal(row.status, '待办');
-  assert.equal(row.question, '', 'question 应被清空');
-  assert.ok(row.note.startsWith('[reply '), 'note 顶部应有 reply 块');
+  assert.equal(row.question, '', 'question 字段应被清空');
+  assert.ok(/^\[reply \d{4}-\d{2}-\d{2} \d{2}:\d{2}\]\nQ: 问题1\?\nA: 解阻答复/.test(row.note),
+    `note 应含 Q/A 格式，实际: ${row.note}`);
 });
 
-test('reply 带 resume：review → todo 且清空 risk', async () => {
+test('reply 带 resume：review → todo 且 risk 内容迁移进 note', async () => {
   const proj = await setupProject([{ ...baseRow, status: '已完成-待review', risk: '改了热路径' }]);
   await replyCore(proj, { id: 1, reply: 'reject 这条', resume: true });
 
   const rows = await readRows(path.join(proj, '.tasks', 'tasks.xlsx'), SHEET_IN_PROGRESS);
   const row = rows.find(r => String(r.id) === '1');
   assert.equal(row.status, '待办');
-  assert.equal(row.risk, '');
+  assert.equal(row.risk, '', 'risk 字段应被清空');
+  assert.ok(/^\[reply \d{4}-\d{2}-\d{2} \d{2}:\d{2}\]\nRisk: 改了热路径\nA: reject 这条/.test(row.note),
+    `note 应含 Risk/A 格式，实际: ${row.note}`);
 });
 
 test('reply 带 resume 在非 blocked/review 状态拒绝', async () => {

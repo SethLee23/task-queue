@@ -52,7 +52,15 @@ async function replyCore(projectRoot, fields) {
   }
 
   const oldNote = String(target.note || '');
-  const block = `[reply ${localTimestamp()}] ${replyText}`;
+  const ts = localTimestamp();
+  let block;
+  if (resume && target.status === STATES.BLOCKED && String(target.question || '').trim()) {
+    block = `[reply ${ts}]\nQ: ${String(target.question).trim()}\nA: ${replyText}`;
+  } else if (resume && target.status === STATES.REVIEW && String(target.risk || '').trim()) {
+    block = `[reply ${ts}]\nRisk: ${String(target.risk).trim()}\nA: ${replyText}`;
+  } else {
+    block = `[reply ${ts}] ${replyText}`;
+  }
   const newNote = oldNote ? `${block}\n---\n${oldNote}` : block;
 
   await withWorkbook(xlsxPath, async wb => {
