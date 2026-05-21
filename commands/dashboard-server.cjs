@@ -92,9 +92,9 @@ async function handleSkip(req, res, rawSlug) {
   const entry = registryList().find(p => p.slug === slug);
   if (!entry) return sendJson(res, 404, { error: 'project not found' });
 
-  const body = await readJsonBody(req);
+  const body = await readJsonBody(req).catch(() => null);
+  if (!body || body.id == null) return sendJson(res, 400, { error: 'id is required' });
   const taskId = body.id;
-  if (taskId == null) return sendJson(res, 400, { error: 'id is required' });
 
   const result = await mutateTaskRow(entry, taskId, STATES.TODO, row => {
     row.getCell(colIndex('status')).value = STATES.SKIPPED;
@@ -119,9 +119,9 @@ async function handlePriority(req, res, rawSlug) {
   const entry = registryList().find(p => p.slug === slug);
   if (!entry) return sendJson(res, 404, { error: 'project not found' });
 
-  const body = await readJsonBody(req);
+  const body = await readJsonBody(req).catch(() => null);
+  if (!body || body.id == null) return sendJson(res, 400, { error: 'id is required' });
   const { id: taskId, priority } = body;
-  if (taskId == null) return sendJson(res, 400, { error: 'id is required' });
   if (!priority || !VALID_PRIORITIES.has(priority)) {
     return sendJson(res, 400, { error: `invalid priority, must be one of: ${PRIORITY_ORDER.join(', ')}` });
   }

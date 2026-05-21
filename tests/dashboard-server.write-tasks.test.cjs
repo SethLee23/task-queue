@@ -92,3 +92,16 @@ test('POST priority 非法值 → 400', async () => {
   );
   assert.equal(res.status, 400);
 });
+
+test('POST skip 非法 JSON body → 400', async () => {
+  const proj = await mkProj([]);
+  registryAdd(proj);
+  if (!inst) inst = await startServer({ port: 0 });
+  const entry = require('../lib/registry.cjs').list()[0];
+  const res = await fetch(`http://127.0.0.1:${inst.port}/api/projects/${entry.slug}/skip`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: 'not-json{',
+  });
+  assert.equal(res.status, 400);
+});
