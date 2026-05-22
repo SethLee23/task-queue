@@ -12,6 +12,8 @@ const { createBlankWorkbook } = require('../lib/workbook.cjs');
 const { captureStdout } = require('./_helpers.cjs');
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'status-pause-test-'));
+// 隔离 registry，避免污染用户真实 ~/.task-queue/projects.json
+process.env.TASK_QUEUE_REGISTRY_PATH = path.join(tmpDir, 'projects.json');
 after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
 
 async function mkProj() {
@@ -60,6 +62,23 @@ test('status 缺 project.config.js 时 idleSleepSeconds 兜底为 270', async ()
   const out = await captureStdout(() => statusCmd(proj, []));
   const parsed = JSON.parse(out);
   assert.equal(parsed.idleSleepSeconds, 270);
+});
+
+test('status 输出 desiredModel（未注册项目回退默认 opus）', async () => {
+  const proj = await mkProj();
+  const out = await captureStdout(() => statusCmd(proj, []));
+  const parsed = JSON.parse(out);
+  assert.equal(parsed.desiredModel, 'opus');
+});
+
+test('status 注册过的项目读出真实 desiredModel', async () => {
+  const { add, update } = require('../lib/registry.cjs');
+  const proj = await mkProj();
+  const e = add(proj);
+  update(e.slug, { desiredModel: 'sonnet' });
+  const out = await captureStdout(() => statusCmd(proj, []));
+  const parsed = JSON.parse(out);
+  assert.equal(parsed.desiredModel, 'sonnet');
 });
 
 test('status 读 idleSleepSeconds 配置 + clamp', async () => {

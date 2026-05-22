@@ -65,3 +65,47 @@ test('block 写状态为"阻塞-等答疑"并写入疑问，不写 ftime', async
   // 阻塞不算完成，ftime 不应被写入（保持原始空值）
   assert.ok(!row.ftime, 'ftime 不应被写入');
 });
+
+test('review 拒绝 --flag 当 risk（防 subagent 自创 --summary 误用）', async () => {
+  const proj = await setupProject([
+    {
+      id: 3, desc: 'x', scope: 'web', priority: '中',
+      status: '进行中', note: '', question: '', risk: '', ctime: '', ftime: '',
+    },
+  ]);
+  await assert.rejects(
+    () => reviewCmd(proj, ['3', '--summary']),
+    /review 不接受 --flag 参数/,
+  );
+  const rows = await readRows(path.join(proj, '.tasks', 'tasks.xlsx'), SHEET_IN_PROGRESS);
+  const row = rows.find(r => String(r.id) === '3');
+  assert.equal(row.status, '进行中', '状态不应被改');
+  assert.equal(row.risk, '', 'risk 字段不应被污染');
+});
+
+test('block 拒绝 --flag 当 question（防 subagent 自创 --xxx 误用）', async () => {
+  const proj = await setupProject([
+    {
+      id: 4, desc: 'y', scope: 'web', priority: '中',
+      status: '进行中', note: '', question: '', risk: '', ctime: '', ftime: '',
+    },
+  ]);
+  await assert.rejects(
+    () => blockCmd(proj, ['4', '--reason']),
+    /block 不接受 --flag 参数/,
+  );
+  const rows = await readRows(path.join(proj, '.tasks', 'tasks.xlsx'), SHEET_IN_PROGRESS);
+  const row = rows.find(r => String(r.id) === '4');
+  assert.equal(row.status, '进行中', '状态不应被改');
+  assert.equal(row.question, '', 'question 字段不应被污染');
+});
+
+test('review/block 正常字符串以 -- 开头但后面有内容时也拒绝（保守策略）', async () => {
+  const proj = await setupProject([
+    {
+      id: 5, desc: 'z', scope: 'web', priority: '中',
+      status: '进行中', note: '', question: '', risk: '', ctime: '', ftime: '',
+    },
+  ]);
+  await assert.rejects(() => reviewCmd(proj, ['5', '--foo bar']), /不接受 --flag/);
+});

@@ -8,6 +8,7 @@ const { localDateStr } = require('../lib/datetime.cjs');
 const { readPaused } = require('../lib/paused.cjs');
 const { readWakeNow } = require('../lib/wake.cjs');
 const { getIdleSleepSeconds } = require('../lib/config.cjs');
+const { getDesiredModelByRoot } = require('../lib/registry.cjs');
 
 /**
  * 宽松读 project.config.js：缺失 / 缺必备字段都不抛错，仅返回原始 module.exports。
@@ -74,6 +75,7 @@ module.exports = async function status(projectRoot, _args) {
     wakeNow:       wakeReason !== null,
     wakeNowReason: wakeReason,
     idleSleepSeconds,
+    desiredModel:  getDesiredModelByRoot(projectRoot),
   };
   process.stdout.write(JSON.stringify(counts) + '\n');
 };

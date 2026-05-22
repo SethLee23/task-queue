@@ -1,5 +1,7 @@
 # task-queue loop 流程
 
+**主 loop 固定运行在 Opus**（启动时由 `/loop` 决定的模型，dashboard 上切的"执行模型"切的是 worker 子任务，不影响主 loop 自身）。每条任务都通过 Agent 工具派发给独立 subagent 实际执行，主 loop 只做调度。
+
 你正在 `${PROJECT_ROOT}` 项目执行任务循环。每次唤醒严格按以下步骤：
 
 ## 准备
@@ -18,17 +20,17 @@ node ~/.claude/skills/task-queue/tasks.cjs recover ${PROJECT_ROOT}
 
 如果输出 `recovered > 0`，说明上次有任务被中断已重新排队。
 
-## Step 0.1: 上报模型 ID（面板显示用）
+## Step 0.1: 上报主 loop 模型（面板显示用）
 
-从系统提示中读取当前会话的模型精确 ID（例如 `claude-opus-4-7` / `claude-sonnet-4-6` / `claude-haiku-4-5-20251001`），写入 heartbeat：
+主 loop 死锁在 Opus，heartbeat 模型**固定**写：
 
 ```
-node ~/.claude/skills/task-queue/tasks.cjs heartbeat ${PROJECT_ROOT} --model <claude-model-id>
+node ~/.claude/skills/task-queue/tasks.cjs heartbeat ${PROJECT_ROOT} --model claude-opus-4-7
 ```
 
-每轮唤醒都跑一次（成本极低，覆盖会话切换/模型升级场景）。dashboard 会读这个字段显示"模型 xxx"。
+每轮唤醒都跑一次。子任务 subagent 有自己的模型，由 subagent 自己上报，不要在这里覆盖。
 
-## Step 0.5: 检查暂停 & 唤醒旗子
+## Step 0.5: 读 status
 
 ```
 node ~/.claude/skills/task-queue/tasks.cjs status ${PROJECT_ROOT}
@@ -36,15 +38,16 @@ node ~/.claude/skills/task-queue/tasks.cjs status ${PROJECT_ROOT}
 
 读输出：
 
-- `"paused": true` → 跳到 Step 5（不执行 next/claim）
+- `"paused": true` → 跳到 Step 5（不执行 next/dispatch）
 - `"wakeNow": true`（无论 paused 与否）→ 调
   ```
   node ~/.claude/skills/task-queue/tasks.cjs clear-wake ${PROJECT_ROOT}
   ```
-  然后正常继续（旗子仅用作 UI 反馈/防误点，清掉避免下轮误判）
-- 记下 `idleSleepSeconds` 字段值（Step 5 要用，默认 270）
+  然后正常继续
+- 记下 `idleSleepSeconds`（Step 5 用，默认 270；范围 [60, 3600]）
+- 记下 `counts.desiredModel`（Step 2 派发用，默认 `opus`）
 
-设计意图：面板的 pause 只影响"取下一条"，不打断正在执行的任务；wake-now 旗子是 dashboard "⚡ 立即执行" 按钮触发的，loop 见到后只需消费旗子，实际响应延迟由 idleSleepSeconds 控制。
+设计意图：面板的 pause 只影响"取下一条"，不打断已派发的 subagent；wake-now 仅消费旗子，实际响应延迟由 idleSleepSeconds 控制。
 
 ## Step 1: 取下一条任务
 
@@ -52,16 +55,96 @@ node ~/.claude/skills/task-queue/tasks.cjs status ${PROJECT_ROOT}
 node ~/.claude/skills/task-queue/tasks.cjs next ${PROJECT_ROOT}
 ```
 
-- 输出 `null` → 跳到 Step 5（决定下次唤醒间隔）
-- 输出 JSON `{id, desc, scope, priority, note}` → 进入 Step 2
+- 输出 `null` → 跳到 Step 5
+- 输出 JSON `{id, desc, scope, priority, note, model, ...}` → 进入 Step 2
 
-## Step 2: claim
+`model` 字段是**任务级模型覆盖**：非空时优先级高于项目级 `desiredModel`；空字符串表示回退项目级。
+
+## Step 2: 派发 subagent 执行任务
+
+主 loop **不再自己 claim / 执行 / done**，全部交给 subagent 完成生命周期。
+
+**决定 worker 模型**：
 
 ```
-node ~/.claude/skills/task-queue/tasks.cjs claim ${PROJECT_ROOT} <id>
+workerModel = task.model || desiredModel   // 都为空时 fallback 'opus'
 ```
 
-claim 完成后，**必须**检查 `note` 字段顶部是否含 `[<用户名> 回复 LATEST YYYY-MM-DD HH:mm] ...` 块：
+**调用 Agent 工具派发**（`model` 参数必传 `opus` / `sonnet` / `haiku` 别名，不是具体版本 ID）：
+
+```
+Agent(
+  subagent_type: "general-purpose",
+  model: <workerModel>,
+  description: "执行任务 #<id>",
+  prompt: <Subagent 模式模板，见本文件末尾 ## Subagent 模式 段；填入 PROJECT_ROOT 与 TASK_ID>
+)
+```
+
+派发失败定义：
+- Agent 工具调用本身抛错
+- subagent 返回内容最后一行不是 `STATUS: done|review|block`
+
+派发失败处理（子任务未走完时，任务可能还是 TODO，状态机不允许 TODO→BLOCKED，需要先推到 IN_PROGRESS 再 block）：
+
+```
+node ~/.claude/skills/task-queue/tasks.cjs claim ${PROJECT_ROOT} <id>    # 若 subagent 已 claim 过，这里会报"非法转换"，忽略即可
+node ~/.claude/skills/task-queue/tasks.cjs block ${PROJECT_ROOT} <id> "subagent 派发失败: <错误前 200 字>"
+```
+
+并按 Step 4 推送两通道通知。
+
+## Step 3: 处理 subagent 返回
+
+subagent 已自行 claim / heartbeat / 执行 / done|review|block / 推送通知。主 loop 收到的最后一行格式为 `STATUS: done|review|block`，**仅作日志确认**，不要重复调结束命令、不要重复推送。
+
+## Step 4: 推送通知（仅派发失败时由主 loop 发）
+
+正常路径下 subagent 自己推了。只在 Step 2 末尾派发失败时由主 loop 发：
+
+```
+PushNotification(message: "任务 #<id> 阻塞: subagent 派发失败 - <错误前 40 字>", status: "proactive")
+node ~/.claude/skills/task-queue/tasks.cjs test-push "任务 #<id> 阻塞: subagent 派发失败 - <错误前 40 字>" --project-root ${PROJECT_ROOT}
+```
+
+## Step 5: 决定下次唤醒间隔
+
+读 `idleSleepSeconds`（Step 0.5 已读过可直接复用）。
+
+- `todo > 0` → 还有积压，立刻回 Step 1 继续（不睡）
+- `todo == 0 && (review > 0 || blocked > 0)` → `ScheduleWakeup <idleSleepSeconds>s "等用户处理 review/blocked（cap 内可被面板立即执行唤醒）"`
+- 全 0 → `ScheduleWakeup <idleSleepSeconds>s "队列空（cap 内可被面板立即执行唤醒）"`
+
+## 异常路径
+
+如果 tasks.cjs 任何命令退出码非 0 且 stderr 含 "task-queue 错误"：
+- 不前进任何状态
+- 推送 "task-queue 异常: <错误头部>，请检查 .tasks/logs/"（两通道）
+- `ScheduleWakeup 3600s "skill 异常等修复"`
+
+如果 Excel 文件被锁（命令输出含 "EAGAIN" 或类似）：
+- 推送 "Excel 正在打开，本轮跳过"（两通道）
+- `ScheduleWakeup 60s "等 Excel 关闭"`
+
+---
+
+## Subagent 模式
+
+**仅当你被主 loop 通过 Agent 工具派发执行单条任务时按本节执行。** 你收到的 prompt 顶部应有 `PROJECT_ROOT=<...>` 和 `TASK_ID=<...>` 两行。所有 CLI 命令前缀同主 loop：
+
+```
+node ~/.claude/skills/task-queue/tasks.cjs <cmd> ${PROJECT_ROOT} [args...]
+```
+
+### S1. claim 任务
+
+```
+node ~/.claude/skills/task-queue/tasks.cjs claim ${PROJECT_ROOT} <TASK_ID>
+```
+
+claim 输出 JSON `{id, desc, scope, priority, note, model, ...}`。
+
+**必须**检查 `note` 字段顶部是否含 `[<用户名> 回复 LATEST YYYY-MM-DD HH:mm] ...` 块：
 
 - 有 → 这是用户对此前 review/block 的**最新**答复，**必须**先把答复完整读完再开工；按答复要求调整方案/范围/做法
 - 无 → 正常按 desc 执行
@@ -76,11 +159,21 @@ reply 块两种形态：
   A: 用户的答复
   Q: AI 此前提的疑问 / Risk: AI 此前标的风险
   ```
-  这是完整 Q&A 上下文，**A 行在前是为了让用户一眼看见自己说了什么**；AI 原疑问/风险已从 question/risk 字段迁移到此处，**字段会被清空属预期行为**，历史在 note 里保全。
+  A 行在前是为了让用户一眼看见自己说了什么；AI 原疑问/风险已从 question/risk 字段迁移到此处，字段会被清空属预期行为，历史在 note 里保全。
 
 reply 块只用于读取上下文，**不要清除或改写它**；done/review/block 自然会把新内容追加到 note 顶部，旧块自动保留为历史。
 
-## Step 3: 执行任务
+### S2. 上报子任务真实模型 ID
+
+从系统提示中读取你自己的会话精确模型 ID（`claude-opus-4-7` / `claude-sonnet-4-6` / `claude-haiku-4-5-20251001`），写 heartbeat：
+
+```
+node ~/.claude/skills/task-queue/tasks.cjs heartbeat ${PROJECT_ROOT} --model <claude-model-id>
+```
+
+这条覆盖主 loop 的 opus 上报，dashboard 显示的就是子任务实际执行模型。
+
+### S3. 执行任务
 
 按 `desc` 字段描述执行，严格遵守：
 
@@ -91,7 +184,7 @@ reply 块只用于读取上下文，**不要清除或改写它**；done/review/b
 - 严守安全护栏：禁止 push、reset --hard、checkout --、--no-verify、--amend
 - 严守 scope 外目录禁触碰（core/static/gwadmin、snackbar、yaum-login 等 CLAUDE.md 明示的外部资源）
 
-## Step 4: 根据结果调用结束命令
+### S4. 根据结果调用结束命令
 
 四类结局（必须三选一）。**路径引用约定**（写 `<风险描述>` / `<疑问>` / done 后追加 note 时都适用）：
 
@@ -100,37 +193,34 @@ reply 块只用于读取上下文，**不要清除或改写它**；done/review/b
 - 引用 URL → 完整 `https://...`
 - **禁止**：单独写文件名（如 `foo.tsx`）—— dashboard 解析为相对根目录会找不到；除非该文件确实在项目根目录
 
-dashboard 会自动识别这些路径并渲染成可点击的链接（点击用 VS Code 打开，没装就用系统默认）。完整路径是让点击真能跳到文件的硬要求。
+dashboard 会自动识别这些路径并渲染成可点击的链接。
 
-### 4a. 全部成功
+#### S4a. 全部成功
 
 ```
 node ~/.claude/skills/task-queue/tasks.cjs done ${PROJECT_ROOT} <id> "<summary>"
 ```
 
-summary **必传且不能省略**,是给人看的"完成回复",落到任务 note 顶部 `[done 时间]` 块,dashboard "今日完成"区直接显示。空 summary = 用户在 dashboard 上看不到你做了什么/答了什么 = 用户会愤怒。
+summary **必传且不能省略**，是给人看的"完成回复"，落到任务 note 顶部 `[done 时间]` 块，dashboard "今日完成"区直接显示。空 summary = 用户看不到你做了什么 = 用户会愤怒。
 
-按任务类型决定 summary 内容与长度:
+按任务类型决定 summary 内容与长度：
 
-**执行型任务**(改代码 / 加测试 / 配置变更等):1-2 句话简述
-- 关键改动文件/模块(超过 3 个只点一两个代表)
-- 关键决策或权衡(为什么这么做,不是怎么做)
-- 后续注意事项(若有)
+**执行型任务**（改代码 / 加测试 / 配置变更等）：1-2 句话简述
+- 关键改动文件/模块（超过 3 个只点一两个代表）
+- 关键决策或权衡（为什么这么做，不是怎么做）
+- 后续注意事项（若有）
 
-示例:
+示例：
 - `"改 ReqConfig.tsx 把'请求名称' label 简化为'名称';顺手把 minWidth 从 120 调到 96 收紧表格"`
 - `"Playwright config + 1 个 router e2e case 落地;约定 baseURL=127.0.0.1:3000 复用 dev server"`
 
-**回答型任务**(desc 含"是什么"/"为什么"/"怎么"/"?"/"解释"/"分析"等,或贴图问"这是啥"):summary **就是完整答案**,放开写。dashboard "今日完成"区是单列宽栏,有足够空间显示多段落长文本。换行 + 文件路径直接写 —— linkifyText 会自动把路径/URL 渲染成可点击链接。
+**回答型任务**（desc 含"是什么"/"为什么"/"怎么"/"?"/"解释"/"分析"等，或贴图问"这是啥"）：summary **就是完整答案**，放开写。dashboard "今日完成"区是单列宽栏，有足够空间显示多段落长文本。换行 + 文件路径直接写 —— linkifyText 会自动把路径/URL 渲染成可点击链接。
 
-示例:
-- `"这 5 个文件分两组:\ndocs/ 内容(按生成顺序):\n1. para-ui-issues.csv — 历史手记,14 条具体问题(TextField onChange...)\n2. para-ui-reflections.md — 组件级反思笔记\n3. scripts/gen-findings.cjs — 单源生成脚本,把上面两个手记合成下面产物\n4. para-ui-findings.md — 给 paraui 团队看的 POC 自检报告 Markdown 版\n5. para-ui-findings.xlsx — 同源 Excel 版\n\n简化:csv + reflections.md 是原料,gen-findings.cjs 是加工脚本,findings.md/.xlsx 是成品"`
+done 命令内部决定是否 auto commit：
+- scope.autoCommit=true 且无 inferModule 失败 → 自动 commit + 归档
+- 否则 → 自动转 review 流程
 
-done 命令内部决定是否 auto commit:
-- scope.autoCommit=true 且无 inferModule 失败 → 自动 commit + 归档(note 顶部块含 commit hash · 【模块】 版本号 + summary)
-- 否则 → 自动转 review 流程(summary 在这条路径会丢失,你可以把关键信息塞进下面 4b 的 review 风险描述里)
-
-### 4b. 软失败（功能完成但有担心需 review）
+#### S4b. 软失败（功能完成但有担心需 review）
 
 ```
 node ~/.claude/skills/task-queue/tasks.cjs review ${PROJECT_ROOT} <id> "<风险描述>"
@@ -138,7 +228,9 @@ node ~/.claude/skills/task-queue/tasks.cjs review ${PROJECT_ROOT} <id> "<风险�
 
 例：单测红、改了热路径、修了公共组件、touched 文件超出预期范围。
 
-### 4c. 硬失败（任务描述卡壳）
+**⚠️ 只有一个字符串参数，禁止加任何 `--flag`**（比如不要写 `review <id> --summary "xxx"`）。命令把 args[1] 当字面 risk 写入 Excel，写错就会在 dashboard 看到 `Risk: --summary` 这种乱码。
+
+#### S4c. 硬失败（任务描述卡壳）
 
 ```
 node ~/.claude/skills/task-queue/tasks.cjs block ${PROJECT_ROOT} <id> "<疑问>"
@@ -146,15 +238,17 @@ node ~/.claude/skills/task-queue/tasks.cjs block ${PROJECT_ROOT} <id> "<疑问>"
 
 例：文件路径不存在、需求歧义、TS 报错改不出来、build 失败。
 
-### 4d. 环境失败
+**⚠️ 同样只有一个字符串参数，禁止加 `--flag`**。block 会拒绝 `--` 开头的 question 字符串。
 
-先重试 1 次（rm -rf node_modules && npm install / 重新跑 build）。仍败按 4c 硬失败处理。
+#### S4d. 环境失败
 
-## Step 4.5: 推送通知（必须，每条任务都推；两条通道都要发）
+先重试 1 次（rm -rf node_modules && npm install / 重新跑 build）。仍败按 S4c 硬失败处理。
 
-无论 done/review/block 之后，必须**并行调用两个推送通道** —— 单独哪一条都可能失效：
+### S5. 推送通知（必须，每条任务都推；两条通道都要发）
 
-### 通道 A：Claude 内置 PushNotification（手机/Remote Control）
+无论 done/review/block 之后，必须**并行调用两个推送通道**——单独哪一条都可能失效：
+
+#### 通道 A：Claude 内置 PushNotification（手机/Remote Control）
 
 ```
 PushNotification(message: "任务 #<id> <短结果>: <desc 前 60 字>", status: "proactive")
@@ -162,13 +256,13 @@ PushNotification(message: "任务 #<id> <短结果>: <desc 前 60 字>", status:
 
 走 Claude Code 应用本身的通知通道，能同步到手机 Remote Control。**但在 macOS 15+ 上**，如果系统设置里没给 Claude Code 开通知权限、或权限被通知中心静默丢弃，本机就看不到桌面横幅。
 
-### 通道 B：桌面 dialog 兜底（osascript System Events，本机 100% 可见）
+#### 通道 B：桌面 dialog 兜底（osascript System Events，本机 100% 可见）
 
-```bash
-node ~/.claude/skills/task-queue/tasks.cjs test-push "任务 #<id> <短结果>: <desc 前 60 字>"
+```
+node ~/.claude/skills/task-queue/tasks.cjs test-push "任务 #<id> <短结果>: <desc 前 60 字>" --project-root ${PROJECT_ROOT}
 ```
 
-默认走 `system-events-dialog` 通道，弹一个浮在所有窗口最前的对话框，60 秒后自动消失（可用 `TASK_QUEUE_DIALOG_TIMEOUT` 覆盖）。这条路径绕开通知中心 codesign 限制，是本机唯一稳定可见的桌面提醒方式（macOS 15.6 已验证 terminal-notifier / osascript display notification 都会被静默丢弃）。
+默认走 `system-events-dialog` 通道，弹一个浮在所有窗口最前的对话框，60 秒后自动消失（可用 `TASK_QUEUE_DIALOG_TIMEOUT` 覆盖）。`--project-root` 让对话框标题显示项目名（例：`para-node-4.0`），不传时退化为 `task-queue`。这条路径绕开通知中心 codesign 限制，是本机唯一稳定可见的桌面提醒方式。
 
 **两条都要发**，顺序不限。消息文案保持一致，例：
 
@@ -176,25 +270,14 @@ node ~/.claude/skills/task-queue/tasks.cjs test-push "任务 #<id> <短结果>: 
 - "任务 #5 待 review: 改了 core 热路径 resolveAgent"
 - "任务 #7 阻塞: web/src/foobar.tsx 不存在?"
 
-## Step 5: 决定下次唤醒间隔
+### S6. 最后一行输出 STATUS
+
+输出完所有信息后，**最后一行必须**是以下三选一（小写、无多余空格、无标点）：
 
 ```
-node ~/.claude/skills/task-queue/tasks.cjs status ${PROJECT_ROOT}
+STATUS: done
+STATUS: review
+STATUS: block
 ```
 
-读 `idleSleepSeconds`（Step 0.5 已读过可直接复用，默认 270；范围 [60, 3600]）。
-
-- `todo > 0` → 还有积压，立刻回 Step 1 继续（不睡）
-- `todo == 0 && (review > 0 || blocked > 0)` → `ScheduleWakeup <idleSleepSeconds>s "等用户处理 review/blocked（cap 内可被面板立即执行唤醒）"`
-- 全 0 → `ScheduleWakeup <idleSleepSeconds>s "队列空（cap 内可被面板立即执行唤醒）"`
-
-## 异常路径
-
-如果 tasks.cjs 任何命令退出码非 0 且 stderr 含 "task-queue 错误"：
-- 不前进任何状态
-- 推送 "task-queue 异常: <错误头部>，请检查 .tasks/logs/"（两条通道都发，同 Step 4.5）
-- `ScheduleWakeup 3600s "skill 异常等修复"`
-
-如果 Excel 文件被锁（命令输出含 "EAGAIN" 或类似）：
-- 推送 "Excel 正在打开，本轮跳过"（两条通道都发）
-- `ScheduleWakeup 60s "等 Excel 关闭"`
+主 loop 用这行判断派发是否成功；没有这行视为派发失败。

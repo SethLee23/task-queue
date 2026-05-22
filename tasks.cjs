@@ -19,6 +19,7 @@ const KNOWN_COMMANDS = [
   'detect', 'init-write', 'next', 'claim', 'done', 'review',
   'block', 'reply', 'status', 'sweep', 'recover', 'add-row', 'test-push',
   'dashboard', 'heartbeat', 'clear-wake',
+  'set-desired-model', 'set-task-model',
 ];
 
 /** 不需要 <project-root> 参数的命令集合 */

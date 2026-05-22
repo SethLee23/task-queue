@@ -20,6 +20,11 @@ module.exports = async function block(projectRoot, args) {
   const question = args[1];
   if (!idArg) throw new Error('block 需要 id 参数');
   if (!question) throw new Error('block 需要 question 参数（疑问内容）');
+  if (String(question).startsWith('--')) {
+    throw new Error(
+      `block 不接受 --flag 参数（收到: ${question}）。正确用法：block <id> "<疑问内容>"`,
+    );
+  }
 
   const xlsxPath = path.join(projectRoot, '.tasks', 'tasks.xlsx');
   const rows = await readRows(xlsxPath, SHEET_IN_PROGRESS);

@@ -34,10 +34,10 @@ test('createBlankWorkbook 创建带两个 sheet、表头与 COLUMNS 对齐的空
   assert.deepEqual(headers, COLUMNS.map(c => c.header));
 });
 
-test('COLUMNS 11 列、key 为 id/desc/scope/priority/status/note/question/risk/ctime/ftime/link', () => {
+test('COLUMNS 11 列、key 顺序为 id/desc/scope/priority/status/note/question/risk/ctime/ftime/model', () => {
   assert.equal(COLUMNS.length, 11);
   assert.deepEqual(COLUMNS.map(c => c.key), [
-    'id', 'desc', 'scope', 'priority', 'status', 'note', 'question', 'risk', 'ctime', 'ftime', 'link',
+    'id', 'desc', 'scope', 'priority', 'status', 'note', 'question', 'risk', 'ctime', 'ftime', 'model',
   ]);
 });
 
@@ -92,4 +92,42 @@ test('withWorkbook 写入前会生成 .bak 备份', async () => {
     });
   });
   assert.ok(fs.existsSync(xlsxPath + '.bak'), '生成了 .bak');
+});
+
+test('addRow 写 model 列后 readRows 能读出', async () => {
+  await createBlankWorkbook(xlsxPath);
+  await withWorkbook(xlsxPath, async wb => {
+    wb.getWorksheet(SHEET_IN_PROGRESS).addRow({
+      id: 1, desc: '默认跟随项目', scope: 'web', priority: '中', status: '待办',
+      note: '', question: '', risk: '', ctime: '', ftime: '', model: '',
+    });
+    wb.getWorksheet(SHEET_IN_PROGRESS).addRow({
+      id: 2, desc: '强制 haiku', scope: 'web', priority: '中', status: '待办',
+      note: '', question: '', risk: '', ctime: '', ftime: '', model: 'haiku',
+    });
+  });
+  const rows = await readRows(xlsxPath, SHEET_IN_PROGRESS);
+  assert.equal(rows.length, 2);
+  assert.equal(rows.find(r => r.id === 1).model, '');
+  assert.equal(rows.find(r => r.id === 2).model, 'haiku');
+});
+
+test('readRows 对历史 10 列 xlsx（无 model 列）兼容：model 字段为空字符串', async () => {
+  const ExcelJS = require('exceljs');
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet(SHEET_IN_PROGRESS);
+  ws.columns = [
+    { header: 'id', key: 'id' }, { header: 'desc', key: 'desc' }, { header: 'scope', key: 'scope' },
+    { header: 'priority', key: 'priority' }, { header: 'status', key: 'status' }, { header: 'note', key: 'note' },
+    { header: 'question', key: 'question' }, { header: 'risk', key: 'risk' },
+    { header: 'ctime', key: 'ctime' }, { header: 'ftime', key: 'ftime' },
+  ];
+  ws.addRow({ id: 7, desc: '老数据', scope: 'core', priority: '中', status: '待办' });
+  wb.addWorksheet(SHEET_ARCHIVED);
+  await wb.xlsx.writeFile(xlsxPath);
+
+  const rows = await readRows(xlsxPath, SHEET_IN_PROGRESS);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].id, 7);
+  assert.equal(rows[0].model, '', '缺列的旧文件 model 字段应回退为空字符串');
 });
