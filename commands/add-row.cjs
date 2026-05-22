@@ -2,7 +2,7 @@
 'use strict';
 
 const path = require('node:path');
-const { readRows, withWorkbook, SHEET_IN_PROGRESS } = require('../lib/workbook.cjs');
+const { readRows, withWorkbook, SHEET_IN_PROGRESS, SHEET_ARCHIVED } = require('../lib/workbook.cjs');
 const { STATES, PRIORITY_ORDER } = require('../lib/states.cjs');
 const { loadProjectConfig } = require('../lib/config.cjs');
 
@@ -18,8 +18,8 @@ const VALID_PRIORITIES = new Set(PRIORITY_ORDER);
  * - priority 不传默认 '中'，否则必须是 高/中/低 之一
  *
  * @param {string} projectRoot 项目根目录绝对路径
- * @param {{ desc: string, scope: string, priority?: string, note?: string, link?: string }} fields
- * @returns {Promise<{ id: number, desc: string, scope: string, priority: string, note: string, link: string, status: string, ctime: string }>}
+ * @param {{ desc: string, scope: string, priority?: string, note?: string }} fields
+ * @returns {Promise<{ id: number, desc: string, scope: string, priority: string, note: string, status: string, ctime: string }>}
  */
 async function addRowCore(projectRoot, fields) {
   const { desc, scope } = fields;
@@ -39,12 +39,14 @@ async function addRowCore(projectRoot, fields) {
   }
 
   const note = fields.note || '';
-  const link = fields.link || '';
   const ctime = new Date().toISOString();
   const xlsxPath = path.join(projectRoot, '.tasks', 'tasks.xlsx');
 
   const existingRows = await readRows(xlsxPath, SHEET_IN_PROGRESS);
-  const maxId = existingRows.reduce((m, r) => {
+  const archivedRows = await readRows(xlsxPath, SHEET_ARCHIVED);
+  // id 必须在两张表合集里取 max+1,否则归档后 in-progress 清空,新任务又从 1 开始,
+  // dashboard 完成区会出现一堆同 id 的卡片完全无法区分。
+  const maxId = [...existingRows, ...archivedRows].reduce((m, r) => {
     const n = parseInt(r.id, 10);
     return Number.isFinite(n) && n > m ? n : m;
   }, 0);
@@ -63,24 +65,23 @@ async function addRowCore(projectRoot, fields) {
       risk: '',
       ctime,
       ftime: '',
-      link,
     });
   });
 
-  return { id, desc, scope, priority, note, link, status: STATES.TODO, ctime };
+  return { id, desc, scope, priority, note, status: STATES.TODO, ctime };
 }
 
 /**
  * CLI 入口：解析位置参数后调 addRowCore，并把结果以 JSON 行写出到 stdout。
  *
  * @param {string} projectRoot 项目根目录绝对路径
- * @param {string[]} args [desc, scope, priority?, note?, link?]
+ * @param {string[]} args [desc, scope, priority?, note?]
  * @returns {Promise<void>}
  */
 async function addRowCli(projectRoot, args) {
-  const [desc, scope, priorityArg, noteArg, linkArg] = args;
+  const [desc, scope, priorityArg, noteArg] = args;
   const result = await addRowCore(projectRoot, {
-    desc, scope, priority: priorityArg, note: noteArg, link: linkArg,
+    desc, scope, priority: priorityArg, note: noteArg,
   });
   process.stdout.write(JSON.stringify(result) + '\n');
 }

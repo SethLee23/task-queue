@@ -8,7 +8,9 @@ const os = require('node:os');
 const {
   createBlankWorkbook,
   readRows,
+  withWorkbook,
   SHEET_IN_PROGRESS,
+  SHEET_ARCHIVED,
 } = require('../lib/workbook.cjs');
 const addRowCmd = require('../commands/add-row.cjs');
 
@@ -90,4 +92,21 @@ test('add-row 多次追加 — 行依次写入且 id 自增', async () => {
   assert.equal(rows[1].desc, 'b');
   assert.equal(rows[1].id, 2);
   assert.equal(rows[1].priority, '低');
+});
+
+test('add-row id 考虑已归档行 — 进行中表空但已归档时不重复使用 id', async () => {
+  const proj = await setupProject();
+  const xlsx = path.join(proj, '.tasks', 'tasks.xlsx');
+  // 模拟一个 sweep 后的状态:进行中表空,已归档表有 id=1/2/3 三条
+  await withWorkbook(xlsx, async wb => {
+    const arch = wb.getWorksheet(SHEET_ARCHIVED);
+    arch.addRow({ id: 1, desc: '旧 A', scope: 'web', priority: '中', status: '已完成', note: '', question: '', risk: '', ctime: '2026-05-20T00:00:00Z', ftime: '2026-05-20T01:00:00Z' });
+    arch.addRow({ id: 2, desc: '旧 B', scope: 'web', priority: '中', status: '已完成', note: '', question: '', risk: '', ctime: '2026-05-20T00:00:00Z', ftime: '2026-05-20T01:00:00Z' });
+    arch.addRow({ id: 3, desc: '旧 C', scope: 'web', priority: '中', status: '已完成', note: '', question: '', risk: '', ctime: '2026-05-20T00:00:00Z', ftime: '2026-05-20T01:00:00Z' });
+  });
+  await addRowCmd(proj, ['新任务', 'web']);
+  const rows = await readRows(xlsx, SHEET_IN_PROGRESS);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].id, 4, '应在归档 max=3 基础上 +1');
+  assert.equal(rows[0].desc, '新任务');
 });
