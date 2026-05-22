@@ -48,7 +48,7 @@ test('reply 不带 resume：在 note 顶部追加 [<用户名> 回复 LATEST ...
     `note 格式应为 [张三 回复 LATEST ts] + 答复 + 分隔符 + 原 note，实际: ${row.note}`);
 });
 
-test('reply 带 resume：blocked → todo，A 行在前 Q 行在后，question 字段清空', async () => {
+test('reply 带 resume：blocked → todo，Q 行在前 A 行在后（按时间线），question 字段清空', async () => {
   const proj = await setupProject([{ ...baseRow, status: '阻塞-等答疑', question: '问题1?' }]);
   await replyCore(proj, { id: 1, reply: '解阻答复', resume: true });
 
@@ -56,11 +56,11 @@ test('reply 带 resume：blocked → todo，A 行在前 Q 行在后，question �
   const row = rows.find(r => String(r.id) === '1');
   assert.equal(row.status, '待办');
   assert.equal(row.question, '', 'question 字段应被清空');
-  assert.ok(/^\[张三 回复 LATEST \d{4}-\d{2}-\d{2} \d{2}:\d{2}\]\nA: 解阻答复\nQ: 问题1\?/.test(row.note),
-    `note 应含 A 行在前 Q 行在后，实际: ${row.note}`);
+  assert.ok(/^\[张三 回复 LATEST \d{4}-\d{2}-\d{2} \d{2}:\d{2}\]\nQ: 问题1\?\nA: 解阻答复/.test(row.note),
+    `note 应含 Q 行在前 A 行在后，实际: ${row.note}`);
 });
 
-test('reply 带 resume：review → todo，A 行在前 Risk 行在后，risk 字段清空', async () => {
+test('reply 带 resume：review → todo，Risk 行在前 A 行在后（按时间线），risk 字段清空', async () => {
   const proj = await setupProject([{ ...baseRow, status: '已完成-待review', risk: '改了热路径' }]);
   await replyCore(proj, { id: 1, reply: 'reject 这条', resume: true });
 
@@ -68,8 +68,8 @@ test('reply 带 resume：review → todo，A 行在前 Risk 行在后，risk 字
   const row = rows.find(r => String(r.id) === '1');
   assert.equal(row.status, '待办');
   assert.equal(row.risk, '', 'risk 字段应被清空');
-  assert.ok(/^\[张三 回复 LATEST \d{4}-\d{2}-\d{2} \d{2}:\d{2}\]\nA: reject 这条\nRisk: 改了热路径/.test(row.note),
-    `note 应含 A 行在前 Risk 行在后，实际: ${row.note}`);
+  assert.ok(/^\[张三 回复 LATEST \d{4}-\d{2}-\d{2} \d{2}:\d{2}\]\nRisk: 改了热路径\nA: reject 这条/.test(row.note),
+    `note 应含 Risk 行在前 A 行在后，实际: ${row.note}`);
 });
 
 test('连续多次 reply：旧 LATEST 自动降级为 OBSOLETE，新 LATEST 唯一', async () => {

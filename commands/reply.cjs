@@ -87,9 +87,9 @@ async function replyCore(projectRoot, fields) {
   const replier = getReplierName();
   let block;
   if (resume && target.status === STATES.BLOCKED && String(target.question || '').trim()) {
-    block = `[${replier} 回复 LATEST ${ts}]\nA: ${replyText}\nQ: ${String(target.question).trim()}`;
+    block = `[${replier} 回复 LATEST ${ts}]\nQ: ${String(target.question).trim()}\nA: ${replyText}`;
   } else if (resume && target.status === STATES.REVIEW && String(target.risk || '').trim()) {
-    block = `[${replier} 回复 LATEST ${ts}]\nA: ${replyText}\nRisk: ${String(target.risk).trim()}`;
+    block = `[${replier} 回复 LATEST ${ts}]\nRisk: ${String(target.risk).trim()}\nA: ${replyText}`;
   } else {
     block = `[${replier} 回复 LATEST ${ts}] ${replyText}`;
   }
