@@ -8,8 +8,36 @@ const {
 const { STATES } = require('../lib/states.cjs');
 const { loadProjectConfig } = require('../lib/config.cjs');
 const { Logger } = require('../lib/logger.cjs');
-const { gitStatus, gitAdd, gitCommit, gitLogToday } = require('../lib/git.cjs');
+const { gitStatus, gitAdd, gitCommit, gitRevParseHead, gitLogToday } = require('../lib/git.cjs');
 const { writeHeartbeat } = require('../lib/heartbeat.cjs');
+const { localTimestamp } = require('../lib/datetime.cjs');
+
+/**
+ * 拼一段 `[done ts]` 块，写到 note 顶部供 dashboard 完成区展示。
+ * @param {{ts: string, commitHash?: string, version?: string, moduleName?: string, summary?: string}} info
+ * @returns {string}
+ */
+function buildDoneBlock({ ts, commitHash, version, moduleName, summary }) {
+  const lines = [`[done ${ts}]`];
+  if (commitHash) {
+    lines.push(`commit ${commitHash} · 【${moduleName}】 ${version}`);
+  } else {
+    lines.push('无文件改动');
+  }
+  if (summary && String(summary).trim()) lines.push(String(summary).trim());
+  return lines.join('\n');
+}
+
+/**
+ * 把新 block 接到 oldNote 顶部，与 reply 的格式对齐。
+ * @param {string|undefined} oldNote
+ * @param {string} block
+ * @returns {string}
+ */
+function prependDoneBlock(oldNote, block) {
+  const old = String(oldNote || '');
+  return old ? `${block}\n---\n${old}` : block;
+}
 
 /**
  * 默认版本号 bump 策略：patch + 1，保留后缀（如 -beta）。
@@ -95,6 +123,7 @@ async function transitionToReview(xlsxPath, rowNumber, riskMsg, logger, projectR
 module.exports = async function done(projectRoot, args) {
   const idArg = args[0];
   if (!idArg) throw new Error('done 需要 id 参数');
+  const summary = args[1];
 
   const xlsxPath = path.join(projectRoot, '.tasks', 'tasks.xlsx');
   const cfg = loadProjectConfig(projectRoot);
@@ -105,6 +134,22 @@ module.exports = async function done(projectRoot, args) {
   if (!target) throw new Error(`未找到 id=${idArg} 的任务`);
   if (target.status !== STATES.IN_PROGRESS) {
     throw new Error(`非法转换：${target.status} → 已完成（必须先 claim 进入进行中）`);
+  }
+
+  // summary 强制要求:空 summary 转 review,避免 dashboard 上"完成区什么都看不到"的体验事故。
+  // 触发条件:loop 没读最新 loop-prompt 或人工调 done 时漏传。把 risk 写明白让人/AI 都能 reply 补上。
+  if (!summary || !String(summary).trim()) {
+    await transitionToReview(
+      xlsxPath,
+      target._rowNumber,
+      'Claude 未提供 summary。loop-prompt.md Step 4a 要求 done 必传 summary —— '
+      + '执行型任务写 1-2 句改动/决策,回答型任务直接写完整答案。'
+      + '请 reply 补一段答复并 resume,下一轮 loop 重新 done(把答复内容用作 summary)。',
+      logger,
+      projectRoot,
+      target.id,
+    );
+    return;
   }
 
   const scopeName = target.scope;
@@ -129,6 +174,9 @@ module.exports = async function done(projectRoot, args) {
   try {
     const changedFiles = gitStatus(projectRoot);
     if (changedFiles.length === 0) {
+      target.note = prependDoneBlock(target.note, buildDoneBlock({
+        ts: localTimestamp(), summary,
+      }));
       target.status = STATES.DONE;
       target.ftime = new Date().toISOString();
       await moveRowToArchive(xlsxPath, target);
@@ -198,7 +246,11 @@ module.exports = async function done(projectRoot, args) {
       scope: scopeName, module: moduleName, desc: target.desc, version,
     });
     gitCommit(projectRoot, commitMsg);
+    const commitHash = gitRevParseHead(projectRoot);
 
+    target.note = prependDoneBlock(target.note, buildDoneBlock({
+      ts: localTimestamp(), commitHash, version, moduleName, summary,
+    }));
     target.status = STATES.DONE;
     target.ftime = new Date().toISOString();
     await moveRowToArchive(xlsxPath, target);
@@ -208,7 +260,7 @@ module.exports = async function done(projectRoot, args) {
       lastFinishedId: target.id,
       lastFinishedAt: target.ftime,
     });
-    logger.info(`task #${target.id} done + commit ${version} 【${moduleName}】`);
+    logger.info(`task #${target.id} done + commit ${commitHash} 【${moduleName}】 ${version}`);
   } catch (e) {
     const msg = (e.message || '').slice(0, 200);
     await transitionToReview(
@@ -221,3 +273,6 @@ module.exports = async function done(projectRoot, args) {
     );
   }
 };
+
+module.exports.buildDoneBlock = buildDoneBlock;
+module.exports.prependDoneBlock = prependDoneBlock;

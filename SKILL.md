@@ -131,7 +131,7 @@ node ~/.claude/skills/task-queue/tasks.cjs add-row /path/proj "登录按钮没�
 | `test-push [message]` | 触发 macOS 原生桌面通知，绕过 Claude 60s 反打扰；用于随时测试通道 |
 | `next <root>` | 输出下一条待办（按优先级排序） |
 | `claim <root> <id\|auto>` | 状态置进行中 |
-| `done <root> <id>` | 标完成，根据 config 决定 auto commit |
+| `done <root> <id> [summary]` | 标完成 + summary 落 note 顶部(dashboard 完成区显示),根据 config 决定 auto commit |
 | `review <root> <id> "<风险>"` | 标待 review |
 | `block <root> <id> "<疑问>"` | 标阻塞 |
 | `status <root>` | 输出 `{todo, in_progress, review, blocked, done_today}` |

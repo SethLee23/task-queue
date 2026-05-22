@@ -88,7 +88,7 @@ test('done 成功路径：autoCommit=true，无风险，自动 commit + 归档',
     ],
   });
   fs.writeFileSync(path.join(proj, 'src/foo.txt'), 'new');
-  await doneCmd(proj, ['1']);
+  await doneCmd(proj, ['1', 'test summary']);
   const inProg = await readRows(path.join(proj, '.tasks', 'tasks.xlsx'), SHEET_IN_PROGRESS);
   const archived = await readRows(path.join(proj, '.tasks', 'tasks.xlsx'), SHEET_ARCHIVED);
   assert.equal(inProg.length, 0);
@@ -121,7 +121,7 @@ test('done 当 scope.autoCommit=false 时不 commit，转 review', async () => {
     ],
   });
   fs.writeFileSync(path.join(proj, 'src/x.ts'), 'new');
-  await doneCmd(proj, ['1']);
+  await doneCmd(proj, ['1', 'test summary']);
   const inProg = await readRows(path.join(proj, '.tasks', 'tasks.xlsx'), SHEET_IN_PROGRESS);
   assert.equal(inProg.length, 1);
   assert.equal(inProg[0].status, '已完成-待review');
@@ -152,7 +152,7 @@ test('done 当 inferModule 返回 null 时转 review', async () => {
     ],
   });
   fs.writeFileSync(path.join(proj, 'src/y.ts'), 'new');
-  await doneCmd(proj, ['1']);
+  await doneCmd(proj, ['1', 'test summary']);
   const inProg = await readRows(path.join(proj, '.tasks', 'tasks.xlsx'), SHEET_IN_PROGRESS);
   assert.equal(inProg[0].status, '已完成-待review');
   assert.match(inProg[0].risk, /模块名推断失败/);
@@ -177,7 +177,7 @@ test('done 工作区无改动时不 commit，状态置已完成并归档', async
       },
     ],
   });
-  await doneCmd(proj, ['1']);
+  await doneCmd(proj, ['1', 'test summary']);
   const archived = await readRows(path.join(proj, '.tasks', 'tasks.xlsx'), SHEET_ARCHIVED);
   assert.equal(archived[0].status, '已完成');
   const logCount = execSync('git rev-list HEAD --count', { cwd: proj, encoding: 'utf8' }).trim();
@@ -208,7 +208,7 @@ test('done pre-commit hook 失败时转 review', async () => {
   fs.writeFileSync(hookPath, '#!/bin/sh\necho hookfail >&2\nexit 1\n');
   fs.chmodSync(hookPath, 0o755);
   fs.writeFileSync(path.join(proj, 'src/a.ts'), 'new');
-  await doneCmd(proj, ['1']);
+  await doneCmd(proj, ['1', 'test summary']);
   const inProg = await readRows(path.join(proj, '.tasks', 'tasks.xlsx'), SHEET_IN_PROGRESS);
   assert.equal(inProg[0].status, '已完成-待review');
   assert.match(inProg[0].risk, /commit 阶段失败|hookfail|hook/i);
@@ -235,10 +235,124 @@ test('done desc 含 $1 时 changelog 写入字面字符串不被替换', async (
     ],
   });
   fs.writeFileSync(path.join(proj, 'src/cfg.ts'), 'new');
-  await doneCmd(proj, ['1']);
+  await doneCmd(proj, ['1', 'test summary']);
   const readme = fs.readFileSync(path.join(proj, 'README.md'), 'utf8');
   assert.ok(
     readme.includes('【路由管理】改 $1 配置；'),
     `README.md 应包含字面 $1，实际内容：${readme}`,
   );
+});
+
+const DONE_HEADER_RE = /^\[done \d{4}-\d{2}-\d{2} \d{2}:\d{2}\]/;
+
+test('done commit 路径 + summary：note 顶部含 [done]+commit+summary，分隔旧 note', async () => {
+  const proj = await setupProject({
+    scope: 'web',
+    autoCommit: true,
+    initialFiles: { 'src/foo.txt': 'old' },
+    rows: [
+      {
+        id: 1, desc: '改 foo', scope: 'web', priority: '高', status: '进行中',
+        note: '旧 note 第一行\n旧 note 第二行',
+        question: '', risk: '', ctime: '2026-05-20T10:00:00Z', ftime: '',
+      },
+    ],
+  });
+  fs.writeFileSync(path.join(proj, 'src/foo.txt'), 'new');
+  await doneCmd(proj, ['1', '改了 foo.txt，验证通过']);
+  const archived = await readRows(path.join(proj, '.tasks', 'tasks.xlsx'), SHEET_ARCHIVED);
+  const note = archived[0].note;
+  assert.match(note, DONE_HEADER_RE);
+  assert.match(note, /\ncommit [0-9a-f]{7,} · 【路由管理】 1\.0\.1\n/);
+  assert.match(note, /\n改了 foo\.txt，验证通过\n---\n旧 note 第一行\n旧 note 第二行$/);
+});
+
+test('done 缺 summary：转 review 并写入清晰 risk 提示', async () => {
+  const proj = await setupProject({
+    scope: 'web',
+    autoCommit: true,
+    initialFiles: { 'src/foo.txt': 'old' },
+    rows: [
+      {
+        id: 1, desc: '改 foo', scope: 'web', priority: '高', status: '进行中',
+        note: '原 note',
+        question: '', risk: '', ctime: '2026-05-20T10:00:00Z', ftime: '',
+      },
+    ],
+  });
+  fs.writeFileSync(path.join(proj, 'src/foo.txt'), 'new');
+  // 不传 summary —— 应当转 review,note 不被改动,工作区也不被 commit
+  await doneCmd(proj, ['1']);
+  const inProg = await readRows(path.join(proj, '.tasks', 'tasks.xlsx'), SHEET_IN_PROGRESS);
+  const archived = await readRows(path.join(proj, '.tasks', 'tasks.xlsx'), SHEET_ARCHIVED);
+  assert.equal(inProg.length, 1, '任务应留在进行中表');
+  assert.equal(archived.length, 0, '不应归档');
+  assert.equal(inProg[0].status, '已完成-待review');
+  assert.match(inProg[0].risk, /未提供 summary/);
+  // 工作区改动还在,没有被 commit
+  const status = execSync('git status --porcelain', { cwd: proj, encoding: 'utf8' });
+  assert.match(status, /src\/foo\.txt/, '改动应仍在工作区');
+});
+
+// 同样验证空字符串 summary 也被拒绝
+test('done summary 为空白字符串：仍转 review', async () => {
+  const proj = await setupProject({
+    scope: 'web',
+    autoCommit: true,
+    initialFiles: { 'src/foo.txt': 'old' },
+    rows: [
+      {
+        id: 1, desc: '改 foo', scope: 'web', priority: '高', status: '进行中',
+        note: '原 note',
+        question: '', risk: '', ctime: '2026-05-20T10:00:00Z', ftime: '',
+      },
+    ],
+  });
+  fs.writeFileSync(path.join(proj, 'src/foo.txt'), 'new');
+  await doneCmd(proj, ['1', '   ']);
+  const inProg = await readRows(path.join(proj, '.tasks', 'tasks.xlsx'), SHEET_IN_PROGRESS);
+  assert.equal(inProg.length, 1);
+  assert.equal(inProg[0].status, '已完成-待review');
+  assert.match(inProg[0].risk, /未提供 summary/);
+});
+
+test('done 无文件改动 + summary：note 顶部含 [done]+"无文件改动"+summary', async () => {
+  const proj = await setupProject({
+    scope: 'web',
+    autoCommit: true,
+    rows: [
+      {
+        id: 1, desc: '空任务', scope: 'web', priority: '高', status: '进行中',
+        note: '',
+        question: '', risk: '', ctime: '2026-05-20T10:00:00Z', ftime: '',
+      },
+    ],
+  });
+  await doneCmd(proj, ['1', '只是核对了一下，无须改码']);
+  const archived = await readRows(path.join(proj, '.tasks', 'tasks.xlsx'), SHEET_ARCHIVED);
+  const note = archived[0].note;
+  assert.match(note, DONE_HEADER_RE);
+  assert.match(note, /\n无文件改动\n只是核对了一下，无须改码$/);
+  // 旧 note 为空 → 不应有 \n---\n 分隔
+  assert.equal(note.includes('\n---\n'), false);
+});
+
+test('buildDoneBlock + prependDoneBlock 单元逻辑', () => {
+  const { buildDoneBlock, prependDoneBlock } = doneCmd;
+  // commit 路径
+  const a = buildDoneBlock({
+    ts: '2026-05-21 18:30', commitHash: 'abc1234',
+    version: '1.2.3', moduleName: '路由管理', summary: 'did X',
+  });
+  assert.equal(a, '[done 2026-05-21 18:30]\ncommit abc1234 · 【路由管理】 1.2.3\ndid X');
+  // 无改动 + 无 summary
+  const b = buildDoneBlock({ ts: '2026-05-21 18:30' });
+  assert.equal(b, '[done 2026-05-21 18:30]\n无文件改动');
+  // summary 仅空白也忽略
+  const c = buildDoneBlock({ ts: '2026-05-21 18:30', summary: '   ' });
+  assert.equal(c, '[done 2026-05-21 18:30]\n无文件改动');
+  // prepend 行为
+  assert.equal(prependDoneBlock('', 'BLOCK'), 'BLOCK');
+  assert.equal(prependDoneBlock(undefined, 'BLOCK'), 'BLOCK');
+  assert.equal(prependDoneBlock('OLD', 'BLOCK'), 'BLOCK\n---\nOLD');
 });
