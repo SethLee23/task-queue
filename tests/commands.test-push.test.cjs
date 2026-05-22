@@ -51,13 +51,13 @@ test('test-push 强制 terminal-notifier 通道时 dry-run 标记通道为 termi
   assert.equal(parsed.dryRun, true);
 });
 
-test('test-push 不指定通道时默认走 system-events-dialog（dry-run 输出 timeoutSec）', { skip: !isDarwin && 'macOS only' }, async () => {
+test('test-push 不指定通道时默认走 system-events-dialog（dry-run 输出 timeoutSec=60）', { skip: !isDarwin && 'macOS only' }, async () => {
   delete process.env.TASK_QUEUE_PUSH_CHANNEL;
   const out = await captureStdout(() => testPushCmd('默认通道', []));
   const parsed = JSON.parse(out);
   assert.equal(parsed.ok, true);
   assert.equal(parsed.channel, 'system-events-dialog');
-  assert.equal(parsed.timeoutSec, 5);
+  assert.equal(parsed.timeoutSec, 60);
   assert.equal(parsed.dryRun, true);
 });
 
@@ -68,4 +68,28 @@ test('test-push system-events-dialog 通道支持 TASK_QUEUE_DIALOG_TIMEOUT 覆�
   const parsed = JSON.parse(out);
   assert.equal(parsed.channel, 'system-events-dialog');
   assert.equal(parsed.timeoutSec, 12);
+});
+
+test('test-push --title 显式覆盖默认标题', { skip: !isDarwin && 'macOS only' }, async () => {
+  const out = await captureStdout(() => testPushCmd('msg', ['--title', '我的项目']));
+  const parsed = JSON.parse(out);
+  assert.equal(parsed.title, '我的项目');
+});
+
+test('test-push --project-root 取末段 basename 作为标题', { skip: !isDarwin && 'macOS only' }, async () => {
+  const out = await captureStdout(() => testPushCmd('msg', ['--project-root', '/Users/seth/Desktop/para/2026/para-node-4.0']));
+  const parsed = JSON.parse(out);
+  assert.equal(parsed.title, 'para-node-4.0');
+});
+
+test('test-push --project-root 末尾斜杠不影响 basename', { skip: !isDarwin && 'macOS only' }, async () => {
+  const out = await captureStdout(() => testPushCmd('msg', ['--project-root', '/Users/seth/projects/foo-bar/']));
+  const parsed = JSON.parse(out);
+  assert.equal(parsed.title, 'foo-bar');
+});
+
+test('test-push --title 优先级高于 --project-root', { skip: !isDarwin && 'macOS only' }, async () => {
+  const out = await captureStdout(() => testPushCmd('msg', ['--title', 'explicit', '--project-root', '/tmp/other']));
+  const parsed = JSON.parse(out);
+  assert.equal(parsed.title, 'explicit');
 });

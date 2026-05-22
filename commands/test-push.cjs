@@ -1,9 +1,11 @@
 // commands/test-push.cjs — 随时测试桌面通知通道
 //
-// 用法：node tasks.cjs test-push [message]
+// 用法：node tasks.cjs test-push [message] [--title <name>] [--project-root <path>]
 //
 // 走系统原生通道，不经过 Claude 的 PushNotification，因此不受 60s 反打扰门控限制 ——
 // 用户/Claude 都可以随时调用验证桌面通知通道。
+//
+// title 优先级：--title 显式参数 > --project-root 推 basename > 默认 'task-queue'
 //
 // macOS 通道优先级（默认按可见性从高到低）：
 //   1) system-events-dialog（默认，最可靠）—— osascript 经 System Events 弹一个浮在
@@ -19,12 +21,31 @@
 // 仅返回 JSON 结果（便于单元测试，不污染本机通知中心 / 屏幕）。
 //
 // 强制指定通道：TASK_QUEUE_PUSH_CHANNEL=system-events-dialog | terminal-notifier | osascript。
-// dialog 超时：TASK_QUEUE_DIALOG_TIMEOUT 秒数（默认 5）。
+// dialog 超时：TASK_QUEUE_DIALOG_TIMEOUT 秒数（默认 60）。
 
 'use strict';
 
 const { execFileSync } = require('node:child_process');
 const os = require('node:os');
+const path = require('node:path');
+
+/**
+ * 扫描 args 里的可选 flag，返回 title。
+ * --title 显式优先；否则 --project-root 取 basename；否则 'task-queue'。
+ * @param {string[]} args
+ * @returns {string}
+ */
+function resolveTitle(args) {
+  const a = args || [];
+  const ti = a.indexOf('--title');
+  if (ti >= 0 && a[ti + 1]) return String(a[ti + 1]);
+  const pi = a.indexOf('--project-root');
+  if (pi >= 0 && a[pi + 1]) {
+    const base = path.basename(String(a[pi + 1]).replace(/\/+$/, ''));
+    if (base) return base;
+  }
+  return 'task-queue';
+}
 
 /**
  * 检测 PATH 中是否存在某个可执行文件。
@@ -47,12 +68,12 @@ function which(bin) {
  *
  * @param {string|undefined} messageArg dispatcher 传来的第一个用户参数（test-push 不需要
  *   projectRoot，dispatcher 把首参塞在这一位）。为空则用默认带时间戳的消息。
- * @param {string[]} _args 剩余参数（暂未使用）
+ * @param {string[]} args 剩余参数（支持 --title <name> 与 --project-root <path>）
  * @returns {Promise<void>}
  */
-module.exports = async function testPush(messageArg, _args) {
+module.exports = async function testPush(messageArg, args) {
   const message = messageArg || `task-queue 通知测试 — ${new Date().toLocaleTimeString('zh-CN', { hour12: false })}`;
-  const title = 'task-queue';
+  const title = resolveTitle(args);
 
   const platform = os.platform();
   if (platform !== 'darwin') {
@@ -62,7 +83,7 @@ module.exports = async function testPush(messageArg, _args) {
 
   const forced = process.env.TASK_QUEUE_PUSH_CHANNEL;
   const channel = forced || 'system-events-dialog';
-  const dialogTimeout = Math.max(1, parseInt(process.env.TASK_QUEUE_DIALOG_TIMEOUT || '5', 10) || 5);
+  const dialogTimeout = Math.max(1, parseInt(process.env.TASK_QUEUE_DIALOG_TIMEOUT || '60', 10) || 60);
 
   // dry-run 模式：跳过实际系统调用，仅返回 JSON（用于单元测试）
   if (process.env.TASK_QUEUE_TEST_DRYRUN === '1') {

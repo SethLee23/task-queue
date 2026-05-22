@@ -157,6 +157,7 @@ module.exports = async function initWrite(projectRoot, args) {
     '.tasks/tasks.xlsx',
     '.tasks/tasks.xlsx.bak',
     '.tasks/logs/',
+    '.tasks/attachments/',
     '.tasks/*.bak',
   ];
   let gitignoreContent = fs.existsSync(gitignorePath)

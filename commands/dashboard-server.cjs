@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const url = require('node:url');
 const { spawn } = require('node:child_process');
-const { list: registryList, remove: registryRemove } = require('../lib/registry.cjs');
+const { list: registryList, remove: registryRemove, update: registryUpdate, VALID_MODELS } = require('../lib/registry.cjs');
 const { readRows, withWorkbook, SHEET_IN_PROGRESS, SHEET_ARCHIVED, colIndex } = require('../lib/workbook.cjs');
 const { STATES, PRIORITY_ORDER } = require('../lib/states.cjs');
 const { readHeartbeat } = require('../lib/heartbeat.cjs');
@@ -15,6 +15,8 @@ const { localDateStr } = require('../lib/datetime.cjs');
 const { loadProjectConfig } = require('../lib/config.cjs');
 const { addRowCore } = require('./add-row.cjs');
 const { replyCore } = require('./reply.cjs');
+const { setTaskModelCore } = require('./set-task-model.cjs');
+const { resolveTarget, buildOpenCommand } = require('../lib/open-target.cjs');
 
 const WEB_ROOT = path.join(__dirname, '..', 'web');
 
@@ -25,7 +27,7 @@ const SLUG_RE = /^[a-z0-9-]+$/;
 const DETAIL_ROUTE_RE = /^\/api\/projects\/([^/]+)$/;
 
 /** 任务列表 pick 字段（基础） */
-const TASK_PICK_FIELDS = ['id', 'desc', 'scope', 'priority', 'ctime', 'note', 'risk', 'question', 'link'];
+const TASK_PICK_FIELDS = ['id', 'desc', 'scope', 'priority', 'ctime', 'note', 'risk', 'question', 'model'];
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -52,6 +54,39 @@ function readJsonBody(req) {
       catch (e) { reject(Object.assign(new Error('invalid JSON body'), { statusCode: 400 })); }
     });
     req.on('error', reject);
+  });
+}
+
+/**
+ * 带最大字节限制的 readJsonBody，用于上传类大 body 端点。
+ * 超过 maxBytes 立即停止累积并 reject 413 错误,但不 destroy stream —
+ * 让请求自然 drain 完,避免抢在 sendJson 之前关闭 socket 导致客户端拿不到响应。
+ * @param {http.IncomingMessage} req
+ * @param {number} maxBytes
+ * @returns {Promise<object>}
+ */
+function readJsonBodyCapped(req, maxBytes) {
+  return new Promise((resolve, reject) => {
+    let raw = '';
+    let bytes = 0;
+    let aborted = false;
+    req.on('data', chunk => {
+      if (aborted) return;
+      bytes += chunk.length;
+      if (bytes > maxBytes) {
+        aborted = true;
+        raw = '';
+        reject(Object.assign(new Error('payload too large'), { statusCode: 413 }));
+        return;
+      }
+      raw += chunk;
+    });
+    req.on('end', () => {
+      if (aborted) return;
+      try { resolve(JSON.parse(raw || '{}')); }
+      catch (e) { reject(Object.assign(new Error('invalid JSON body'), { statusCode: 400 })); }
+    });
+    req.on('error', err => { if (!aborted) reject(err); });
   });
 }
 
@@ -240,7 +275,6 @@ async function handleAddRow(req, res, rawSlug) {
       scope: String(body.scope),
       priority: body.priority ? String(body.priority) : undefined,
       note: body.note ? String(body.note) : '',
-      link: body.link ? String(body.link) : '',
     });
     sendJson(res, 200, { ok: true, row: result });
   } catch (err) {
@@ -248,26 +282,155 @@ async function handleAddRow(req, res, rawSlug) {
   }
 }
 
+/** 允许的图片 MIME → 文件扩展名 */
+const ALLOWED_IMAGE_TYPES = new Map([
+  ['image/png', 'png'],
+  ['image/jpeg', 'jpg'],
+  ['image/gif', 'gif'],
+  ['image/webp', 'webp'],
+]);
+
+/** 单张图片最大字节数（解码后） */
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+
+/** 上传请求 body 最大字节数（容纳 base64 膨胀 ~33%） */
+const MAX_UPLOAD_BODY_BYTES = 7 * 1024 * 1024;
+
+/**
+ * 幂等地把 .tasks/attachments/ 追加到项目 .gitignore，避免附件被误 commit。
+ * 文件不存在则创建。任何 IO 失败均吞掉（best-effort）。
+ * @param {string} projectRoot
+ */
+function ensureAttachmentsGitignored(projectRoot) {
+  const gitignorePath = path.join(projectRoot, '.gitignore');
+  const wanted = '.tasks/attachments/';
+  let content = '';
+  try { content = fs.readFileSync(gitignorePath, 'utf8'); } catch (_) { /* 不存在 → 创建 */ }
+  const lines = new Set(content.split('\n').map(l => l.trim()));
+  if (lines.has(wanted)) return;
+  if (content.length > 0 && !content.endsWith('\n')) content += '\n';
+  content += wanted + '\n';
+  try { fs.writeFileSync(gitignorePath, content); } catch (_) { /* best-effort */ }
+}
+
+/**
+ * 处理 POST /api/projects/:slug/upload-image
+ * body: { contentType: string, dataBase64: string, filename?: string }
+ *
+ * 接收前端粘贴/选择的图片二进制（base64 编码),写入 <root>/.tasks/attachments/<ts>-<rand>.<ext>,
+ * 返回相对项目根的路径。校验:
+ *  - contentType 必在 ALLOWED_IMAGE_TYPES
+ *  - 解码后大小 ≤ MAX_IMAGE_BYTES
+ *  - body 字节数 ≤ MAX_UPLOAD_BODY_BYTES（早期 abort,防止超大 payload）
+ *
+ * 首次写入时 best-effort 把 .tasks/attachments/ 加入 .gitignore。
+ *
+ * @param {http.IncomingMessage} req
+ * @param {http.ServerResponse} res
+ * @param {string} rawSlug
+ */
+async function handleUploadImage(req, res, rawSlug) {
+  const slug = decodeURIComponent(rawSlug);
+  if (!SLUG_RE.test(slug)) return sendJson(res, 400, { error: 'invalid slug format' });
+
+  const entry = registryList().find(p => p.slug === slug);
+  if (!entry) return sendJson(res, 404, { error: 'project not found' });
+
+  let body;
+  try {
+    body = await readJsonBodyCapped(req, MAX_UPLOAD_BODY_BYTES);
+  } catch (err) {
+    return sendJson(res, err.statusCode || 400, { error: err.message });
+  }
+
+  const contentType = body && typeof body.contentType === 'string'
+    ? body.contentType.toLowerCase().trim()
+    : '';
+  if (!ALLOWED_IMAGE_TYPES.has(contentType)) {
+    return sendJson(res, 400, {
+      error: `不支持的图片类型: ${contentType || '(空)'}（仅 png/jpeg/gif/webp）`,
+    });
+  }
+  const ext = ALLOWED_IMAGE_TYPES.get(contentType);
+
+  if (!body.dataBase64 || typeof body.dataBase64 !== 'string') {
+    return sendJson(res, 400, { error: 'dataBase64 必填' });
+  }
+
+  const buf = Buffer.from(body.dataBase64, 'base64');
+  if (buf.length === 0) {
+    return sendJson(res, 400, { error: '图片数据为空或 base64 无效' });
+  }
+  if (buf.length > MAX_IMAGE_BYTES) {
+    return sendJson(res, 413, {
+      error: `图片过大（${buf.length} 字节，上限 ${MAX_IMAGE_BYTES}）`,
+    });
+  }
+
+  const attachmentsDir = path.join(entry.root, '.tasks', 'attachments');
+  try {
+    fs.mkdirSync(attachmentsDir, { recursive: true });
+  } catch (err) {
+    return sendJson(res, 500, { error: `创建 attachments 目录失败: ${err.message}` });
+  }
+
+  const ts = new Date().toISOString().replace(/[:.]/g, '-');
+  const rand = Math.random().toString(36).slice(2, 6);
+  const filename = `${ts}-${rand}.${ext}`;
+  const absPath = path.join(attachmentsDir, filename);
+
+  try {
+    fs.writeFileSync(absPath, buf);
+  } catch (err) {
+    return sendJson(res, 500, { error: `写入文件失败: ${err.message}` });
+  }
+
+  ensureAttachmentsGitignored(entry.root);
+
+  sendJson(res, 200, {
+    ok: true,
+    path: `.tasks/attachments/${filename}`,
+    bytes: buf.length,
+  });
+}
+
 /**
  * 处理 POST /api/open
- * body: { target: string }
- * 用 macOS `open` 命令打开本地路径、文件或 URL。
+ * body: { target: string, projectRoot?: string }
+ *
+ * target 可为 http(s):// URL、绝对路径、相对路径（需 projectRoot）、~/path、或带 :line:col 后缀。
+ * URL 直接 `open <url>` 走系统默认浏览器；文件类目标优先用 VS Code（检测到才用），否则 fallback `open <path>` 走系统默认关联。
+ *
  * 参数通过 spawn 数组传入，避免 shell 注入；
- * 拒绝空串、非字符串及以 "-" 开头（防止当作 open 的 flag 解析）。
+ * 路径解析交给 lib/open-target.cjs，含 .. 逃逸/-/ 开头等护栏。
+ * 文件类目标先 fs.existsSync 校验存在，避免静默 spawn 失败。
+ *
  * @param {http.IncomingMessage} req
  * @param {http.ServerResponse} res
  */
 async function handleOpen(req, res) {
   const body = await readJsonBody(req).catch(() => null);
   const target = body && typeof body.target === 'string' ? body.target.trim() : '';
+  const projectRoot = body && typeof body.projectRoot === 'string' ? body.projectRoot : undefined;
   if (!target) return sendJson(res, 400, { error: 'target 必填' });
-  if (target.startsWith('-')) return sendJson(res, 400, { error: 'target 不能以 - 开头' });
 
+  let resolved;
   try {
-    const child = spawn('open', [target], { stdio: 'ignore', detached: true });
+    resolved = resolveTarget(target, projectRoot);
+  } catch (err) {
+    return sendJson(res, 400, { error: err.message });
+  }
+
+  if (resolved.kind === 'file' && !fs.existsSync(resolved.value)) {
+    return sendJson(res, 404, { error: `路径不存在: ${resolved.value}` });
+  }
+
+  const { cmd, args } = buildOpenCommand(resolved);
+  try {
+    const child = spawn(cmd, args, { stdio: 'ignore', detached: true });
     child.on('error', () => { /* ignore — 客户端已收到响应 */ });
     child.unref();
-    sendJson(res, 200, { ok: true });
+    sendJson(res, 200, { ok: true, opener: cmd });
   } catch (err) {
     sendJson(res, 500, { error: String(err.message) });
   }
@@ -340,6 +503,64 @@ async function handleReply(req, res, rawSlug) {
       reply: String(body.reply),
       resume: !!body.resume,
     });
+    sendJson(res, 200, { ok: true, task: result });
+  } catch (err) {
+    sendJson(res, 400, { error: String(err.message) });
+  }
+}
+
+/**
+ * 处理 POST /api/projects/:slug/desired-model
+ * body: { model } 项目级默认 worker 模型，subagent 派发时用
+ * @param {http.IncomingMessage} req
+ * @param {http.ServerResponse} res
+ * @param {string} rawSlug
+ */
+async function handleDesiredModel(req, res, rawSlug) {
+  const slug = decodeURIComponent(rawSlug);
+  if (!SLUG_RE.test(slug)) return sendJson(res, 400, { error: 'invalid slug format' });
+
+  const entry = registryList().find(p => p.slug === slug);
+  if (!entry) return sendJson(res, 404, { error: 'project not found' });
+
+  const body = await readJsonBody(req).catch(() => null);
+  const model = body && typeof body.model === 'string' ? body.model.trim() : '';
+  if (!VALID_MODELS.includes(model)) {
+    return sendJson(res, 400, { error: `model 必须为 ${VALID_MODELS.join('/')}` });
+  }
+
+  try {
+    const updated = registryUpdate(slug, { desiredModel: model });
+    sendJson(res, 200, { ok: true, desiredModel: updated.desiredModel });
+  } catch (err) {
+    sendJson(res, 400, { error: String(err.message) });
+  }
+}
+
+/**
+ * 处理 POST /api/projects/:slug/tasks/:id/model
+ * body: { model } 任务级覆盖，model 为空字符串清除覆盖（回退项目级）
+ * @param {http.IncomingMessage} req
+ * @param {http.ServerResponse} res
+ * @param {string} rawSlug
+ * @param {string} rawTaskId
+ */
+async function handleTaskModel(req, res, rawSlug, rawTaskId) {
+  const slug = decodeURIComponent(rawSlug);
+  if (!SLUG_RE.test(slug)) return sendJson(res, 400, { error: 'invalid slug format' });
+
+  const entry = registryList().find(p => p.slug === slug);
+  if (!entry) return sendJson(res, 404, { error: 'project not found' });
+
+  const body = await readJsonBody(req).catch(() => null);
+  if (!body) return sendJson(res, 400, { error: 'invalid body' });
+  const model = typeof body.model === 'string' ? body.model.trim() : '';
+  if (model && !VALID_MODELS.includes(model)) {
+    return sendJson(res, 400, { error: `model 必须为 ${VALID_MODELS.join('/')} 或空字符串清除覆盖` });
+  }
+
+  try {
+    const result = await setTaskModelCore(entry.root, { id: rawTaskId, model });
     sendJson(res, 200, { ok: true, task: result });
   } catch (err) {
     sendJson(res, 400, { error: String(err.message) });
@@ -543,6 +764,9 @@ async function buildProjectDetail(entry) {
         done_today.push(picked);
       }
     }
+    // 最新完成在前 —— 用户看 done strip 第一眼就是最近 Claude 干的活。
+    // ftime 是 ISO 字符串(commands/done.cjs 写的 new Date().toISOString()),字符串降序即时间降序。
+    done_today.sort((a, b) => String(b.ftime || '').localeCompare(String(a.ftime || '')));
   }
 
   return { project, scopes, tasks: { in_progress, todo, review, blocked, done_today } };
@@ -566,6 +790,63 @@ async function handleApiProjectDetail(res, rawSlug) {
   sendJson(res, 200, detail);
 }
 
+/** GET /api/projects/:slug/file?path=.tasks/attachments/xxx 允许的 ext → MIME */
+const ATTACH_FILE_MIME = {
+  '.png':  'image/png',
+  '.jpg':  'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif':  'image/gif',
+  '.webp': 'image/webp',
+};
+
+/**
+ * 处理 GET /api/projects/:slug/file?path=.tasks/attachments/xxx
+ *
+ * 用于前端 <img src> inline 显示任务附件。严格限制:
+ *  - path 必须是相对路径,且以 .tasks/attachments/ 开头
+ *  - 解析后绝对路径必须仍位于 <root>/.tasks/attachments/ 下（防 .. 逃逸）
+ *  - 扩展名必须在 ATTACH_FILE_MIME 白名单（防当成静态服务器分发任意文件）
+ *
+ * @param {http.IncomingMessage} req
+ * @param {http.ServerResponse} res
+ * @param {string} rawSlug
+ */
+function handleGetAttachment(req, res, rawSlug) {
+  const slug = decodeURIComponent(rawSlug);
+  if (!SLUG_RE.test(slug)) return send(res, 400, 'invalid slug');
+
+  const entry = registryList().find(p => p.slug === slug);
+  if (!entry) return send(res, 404, 'project not found');
+
+  const parsed = url.parse(req.url, true);
+  const relPath = parsed.query && typeof parsed.query.path === 'string' ? parsed.query.path : '';
+  if (!relPath) return send(res, 400, 'path 必填');
+
+  if (!relPath.startsWith('.tasks/attachments/')) {
+    return send(res, 403, 'forbidden (仅允许 .tasks/attachments/ 下文件)');
+  }
+
+  const absPath = path.resolve(entry.root, relPath);
+  const allowedPrefix = path.resolve(entry.root, '.tasks', 'attachments') + path.sep;
+  if (!(absPath + path.sep).startsWith(allowedPrefix) && absPath + path.sep !== allowedPrefix) {
+    return send(res, 403, 'forbidden (path escape)');
+  }
+
+  const ext = path.extname(absPath).toLowerCase();
+  const mime = ATTACH_FILE_MIME[ext];
+  if (!mime) return send(res, 415, 'unsupported file type');
+
+  if (!fs.existsSync(absPath) || !fs.statSync(absPath).isFile()) {
+    return send(res, 404, 'not found');
+  }
+
+  res.writeHead(200, {
+    'Content-Type': mime,
+    'Cache-Control': 'private, max-age=3600',
+  });
+  res.end(fs.readFileSync(absPath));
+}
+
 function send(res, status, body, contentType = 'text/plain; charset=utf-8') {
   res.writeHead(status, { 'Content-Type': contentType });
   res.end(body);
@@ -586,7 +867,11 @@ function serveStatic(req, res) {
     return send(res, 404, 'not found');
   }
   const ext = path.extname(filePath);
-  send(res, 200, fs.readFileSync(filePath), MIME[ext] || 'application/octet-stream');
+  res.writeHead(200, {
+    'Content-Type': MIME[ext] || 'application/octet-stream',
+    'Cache-Control': 'no-cache, no-store, must-revalidate',
+  });
+  res.end(fs.readFileSync(filePath));
 }
 
 function handle(req, res) {
@@ -644,6 +929,19 @@ function handle(req, res) {
     return;
   }
 
+  const uploadImgM = pathname.match(/^\/api\/projects\/([^/]+)\/upload-image$/);
+  if (uploadImgM && req.method === 'POST') {
+    handleUploadImage(req, res, uploadImgM[1]).catch(err => sendJson(res, 500, { error: String(err.message) }));
+    return;
+  }
+
+  const fileM = pathname.match(/^\/api\/projects\/([^/]+)\/file$/);
+  if (fileM && req.method === 'GET') {
+    try { handleGetAttachment(req, res, fileM[1]); }
+    catch (err) { sendJson(res, 500, { error: String(err.message) }); }
+    return;
+  }
+
   const loopCmdM = pathname.match(/^\/api\/projects\/([^/]+)\/loop-command$/);
   if (loopCmdM && req.method === 'GET') {
     handleLoopCommand(res, loopCmdM[1]).catch(err => sendJson(res, 500, { error: String(err.message) }));
@@ -653,6 +951,18 @@ function handle(req, res) {
   const replyM = pathname.match(/^\/api\/projects\/([^/]+)\/reply$/);
   if (replyM && req.method === 'POST') {
     handleReply(req, res, replyM[1]).catch(err => sendJson(res, 500, { error: String(err.message) }));
+    return;
+  }
+
+  const desiredModelM = pathname.match(/^\/api\/projects\/([^/]+)\/desired-model$/);
+  if (desiredModelM && req.method === 'POST') {
+    handleDesiredModel(req, res, desiredModelM[1]).catch(err => sendJson(res, 500, { error: String(err.message) }));
+    return;
+  }
+
+  const taskModelM = pathname.match(/^\/api\/projects\/([^/]+)\/tasks\/([^/]+)\/model$/);
+  if (taskModelM && req.method === 'POST') {
+    handleTaskModel(req, res, taskModelM[1], taskModelM[2]).catch(err => sendJson(res, 500, { error: String(err.message) }));
     return;
   }
 
