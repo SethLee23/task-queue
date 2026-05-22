@@ -2,6 +2,8 @@
 'use strict';
 
 const path = require('node:path');
+const os = require('node:os');
+const { execSync } = require('node:child_process');
 const {
   readRows, withWorkbook, SHEET_IN_PROGRESS, colIndex,
 } = require('../lib/workbook.cjs');
@@ -10,13 +12,40 @@ const { Logger } = require('../lib/logger.cjs');
 const { localTimestamp } = require('../lib/datetime.cjs');
 
 /**
- * 把已有 note 里所有 `[REPLY LATEST ...]` 标签降级为 `[reply OBSOLETE ...]`，
- * 让新写入的 LATEST 始终唯一。AI 据 LATEST 锁定最新指令，OBSOLETE 仅作上下文。
+ * 获取回复人显示名。优先级：
+ * 1. `TASK_QUEUE_USER_NAME` 环境变量（测试 / 显式覆盖）
+ * 2. `git config --global user.name`（首次调用后缓存）
+ * 3. 操作系统用户名
+ * 4. "user" 兜底
+ * @returns {string}
+ */
+let cachedGitName;
+function getReplierName() {
+  const envName = String(process.env.TASK_QUEUE_USER_NAME || '').trim();
+  if (envName) return envName;
+  if (cachedGitName !== undefined) return cachedGitName;
+  try {
+    cachedGitName = execSync('git config --global user.name', {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    if (cachedGitName) return cachedGitName;
+  } catch (_) { /* ignore */ }
+  cachedGitName = String(os.userInfo().username || '').trim() || 'user';
+  return cachedGitName;
+}
+
+/**
+ * 把已有 note 里所有 `[<名字> 回复 LATEST ...]`（含旧版 `[REPLY LATEST ...]`）
+ * 降级为对应的 OBSOLETE 标签，让新写入的 LATEST 始终唯一。
+ * AI 据 LATEST 锁定最新指令，OBSOLETE 仅作上下文。
  * @param {string} note
  * @returns {string}
  */
 function demoteLatestTags(note) {
-  return note.replace(/\[REPLY LATEST (\d{4}-\d{2}-\d{2} \d{2}:\d{2})\]/g, '[reply OBSOLETE $1]');
+  return note
+    .replace(/\[([^\[\]]+?) 回复 LATEST (\d{4}-\d{2}-\d{2} \d{2}:\d{2})\]/g, '[$1 回复 OBSOLETE $2]')
+    .replace(/\[REPLY LATEST (\d{4}-\d{2}-\d{2} \d{2}:\d{2})\]/g, '[reply OBSOLETE $1]');
 }
 
 /**
@@ -55,13 +84,14 @@ async function replyCore(projectRoot, fields) {
 
   const oldNote = demoteLatestTags(String(target.note || ''));
   const ts = localTimestamp();
+  const replier = getReplierName();
   let block;
   if (resume && target.status === STATES.BLOCKED && String(target.question || '').trim()) {
-    block = `[REPLY LATEST ${ts}]\nQ: ${String(target.question).trim()}\nA: ${replyText}`;
+    block = `[${replier} 回复 LATEST ${ts}]\nA: ${replyText}\nQ: ${String(target.question).trim()}`;
   } else if (resume && target.status === STATES.REVIEW && String(target.risk || '').trim()) {
-    block = `[REPLY LATEST ${ts}]\nRisk: ${String(target.risk).trim()}\nA: ${replyText}`;
+    block = `[${replier} 回复 LATEST ${ts}]\nA: ${replyText}\nRisk: ${String(target.risk).trim()}`;
   } else {
-    block = `[REPLY LATEST ${ts}] ${replyText}`;
+    block = `[${replier} 回复 LATEST ${ts}] ${replyText}`;
   }
   const newNote = oldNote ? `${block}\n---\n${oldNote}` : block;
 

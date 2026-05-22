@@ -6,6 +6,10 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
+
+// 固定回复人名字便于断言；必须在 require commands/reply 之前设置
+process.env.TASK_QUEUE_USER_NAME = '张三';
+
 const { createBlankWorkbook, withWorkbook, readRows, SHEET_IN_PROGRESS } = require('../lib/workbook.cjs');
 const replyCmd = require('../commands/reply.cjs');
 const { replyCore } = require('../commands/reply.cjs');
@@ -32,7 +36,7 @@ const baseRow = {
   note: '原备注', question: '', risk: '', ctime: '2026-05-20T10:00:00Z', ftime: '',
 };
 
-test('reply 不带 resume：在 note 顶部追加 [REPLY LATEST ...] 块，状态不变', async () => {
+test('reply 不带 resume：在 note 顶部追加 [<用户名> 回复 LATEST ...] 块，状态不变', async () => {
   const proj = await setupProject([{ ...baseRow, status: '阻塞-等答疑', question: '问题1?' }]);
   await replyCore(proj, { id: 1, reply: '答复内容' });
 
@@ -40,11 +44,11 @@ test('reply 不带 resume：在 note 顶部追加 [REPLY LATEST ...] 块，状�
   const row = rows.find(r => String(r.id) === '1');
   assert.equal(row.status, '阻塞-等答疑');
   assert.equal(row.question, '问题1?', 'question 未被清空');
-  assert.ok(/^\[REPLY LATEST \d{4}-\d{2}-\d{2} \d{2}:\d{2}\] 答复内容\n---\n原备注$/.test(row.note),
-    `note 格式应为 LATEST 时间戳 + 答复 + 分隔符 + 原 note，实际: ${row.note}`);
+  assert.ok(/^\[张三 回复 LATEST \d{4}-\d{2}-\d{2} \d{2}:\d{2}\] 答复内容\n---\n原备注$/.test(row.note),
+    `note 格式应为 [张三 回复 LATEST ts] + 答复 + 分隔符 + 原 note，实际: ${row.note}`);
 });
 
-test('reply 带 resume：blocked → todo 且 question 内容迁移进 LATEST 块', async () => {
+test('reply 带 resume：blocked → todo，A 行在前 Q 行在后，question 字段清空', async () => {
   const proj = await setupProject([{ ...baseRow, status: '阻塞-等答疑', question: '问题1?' }]);
   await replyCore(proj, { id: 1, reply: '解阻答复', resume: true });
 
@@ -52,11 +56,11 @@ test('reply 带 resume：blocked → todo 且 question 内容迁移进 LATEST �
   const row = rows.find(r => String(r.id) === '1');
   assert.equal(row.status, '待办');
   assert.equal(row.question, '', 'question 字段应被清空');
-  assert.ok(/^\[REPLY LATEST \d{4}-\d{2}-\d{2} \d{2}:\d{2}\]\nQ: 问题1\?\nA: 解阻答复/.test(row.note),
-    `note 应含 LATEST + Q/A 格式，实际: ${row.note}`);
+  assert.ok(/^\[张三 回复 LATEST \d{4}-\d{2}-\d{2} \d{2}:\d{2}\]\nA: 解阻答复\nQ: 问题1\?/.test(row.note),
+    `note 应含 A 行在前 Q 行在后，实际: ${row.note}`);
 });
 
-test('reply 带 resume：review → todo 且 risk 内容迁移进 LATEST 块', async () => {
+test('reply 带 resume：review → todo，A 行在前 Risk 行在后，risk 字段清空', async () => {
   const proj = await setupProject([{ ...baseRow, status: '已完成-待review', risk: '改了热路径' }]);
   await replyCore(proj, { id: 1, reply: 'reject 这条', resume: true });
 
@@ -64,8 +68,8 @@ test('reply 带 resume：review → todo 且 risk 内容迁移进 LATEST 块', a
   const row = rows.find(r => String(r.id) === '1');
   assert.equal(row.status, '待办');
   assert.equal(row.risk, '', 'risk 字段应被清空');
-  assert.ok(/^\[REPLY LATEST \d{4}-\d{2}-\d{2} \d{2}:\d{2}\]\nRisk: 改了热路径\nA: reject 这条/.test(row.note),
-    `note 应含 LATEST + Risk/A 格式，实际: ${row.note}`);
+  assert.ok(/^\[张三 回复 LATEST \d{4}-\d{2}-\d{2} \d{2}:\d{2}\]\nA: reject 这条\nRisk: 改了热路径/.test(row.note),
+    `note 应含 A 行在前 Risk 行在后，实际: ${row.note}`);
 });
 
 test('连续多次 reply：旧 LATEST 自动降级为 OBSOLETE，新 LATEST 唯一', async () => {
@@ -77,12 +81,12 @@ test('连续多次 reply：旧 LATEST 自动降级为 OBSOLETE，新 LATEST 唯�
 
   const rows = await readRows(path.join(proj, '.tasks', 'tasks.xlsx'), SHEET_IN_PROGRESS);
   const row = rows.find(r => String(r.id) === '1');
-  const latestCount = (row.note.match(/\[REPLY LATEST /g) || []).length;
-  const obsoleteCount = (row.note.match(/\[reply OBSOLETE /g) || []).length;
+  const latestCount = (row.note.match(/\[张三 回复 LATEST /g) || []).length;
+  const obsoleteCount = (row.note.match(/\[张三 回复 OBSOLETE /g) || []).length;
   assert.equal(latestCount, 1, `应仅 1 个 LATEST 块，实际 ${latestCount}：${row.note}`);
   assert.equal(obsoleteCount, 2, `应有 2 个 OBSOLETE 块，实际 ${obsoleteCount}：${row.note}`);
   // 最顶部必须是最新的（第三次澄清）
-  assert.ok(/^\[REPLY LATEST [^\]]+\] 第三次澄清/.test(row.note),
+  assert.ok(/^\[张三 回复 LATEST [^\]]+\] 第三次澄清/.test(row.note),
     `note 顶部应是第三次答复，实际: ${row.note.slice(0, 200)}`);
 });
 

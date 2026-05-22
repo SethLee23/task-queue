@@ -8,6 +8,8 @@ const os = require('node:os');
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'srv-reply-test-'));
 process.env.TASK_QUEUE_REGISTRY_PATH = path.join(tmpDir, 'registry.json');
+// 固定回复人名字便于断言
+process.env.TASK_QUEUE_USER_NAME = '张三';
 
 const { startServer } = require('../commands/dashboard-server.cjs');
 const { add: registryAdd } = require('../lib/registry.cjs');
@@ -59,7 +61,7 @@ test('POST /reply 普通答复：仅追加 note，状态不变', async () => {
   assert.equal(body.task.status, '阻塞-等答疑');
 
   const rows = await readRows(path.join(proj, '.tasks', 'tasks.xlsx'), SHEET_IN_PROGRESS);
-  assert.ok(rows[0].note.startsWith('[REPLY LATEST '));
+  assert.ok(rows[0].note.startsWith('[张三 回复 LATEST '));
   assert.equal(rows[0].question, 'q?');
 });
 

@@ -61,22 +61,22 @@ node ~/.claude/skills/task-queue/tasks.cjs next ${PROJECT_ROOT}
 node ~/.claude/skills/task-queue/tasks.cjs claim ${PROJECT_ROOT} <id>
 ```
 
-claim 完成后，**必须**检查 `note` 字段顶部是否含 `[REPLY LATEST YYYY-MM-DD HH:mm] ...` 块：
+claim 完成后，**必须**检查 `note` 字段顶部是否含 `[<用户名> 回复 LATEST YYYY-MM-DD HH:mm] ...` 块：
 
 - 有 → 这是用户对此前 review/block 的**最新**答复，**必须**先把答复完整读完再开工；按答复要求调整方案/范围/做法
 - 无 → 正常按 desc 执行
 
-note 里只可能有 **1 个** `[REPLY LATEST ...]` 块（每次新 reply 都会自动把现存 LATEST 降级为 OBSOLETE）。看到 `[reply OBSOLETE ...]` 块表示这是更早的历史回复，**仅作背景理解，不要按它执行**——否则你会重复犯之前已经被新 LATEST 推翻的错误。
+note 里只可能有 **1 个** `[<用户名> 回复 LATEST ...]` 块（每次新 reply 都会自动把现存 LATEST 降级为 OBSOLETE）。看到 `[<用户名> 回复 OBSOLETE ...]` 或更老的 `[reply OBSOLETE ...]` 块表示这是更早的历史回复，**仅作背景理解，不要按它执行**——否则你会重复犯之前已经被新 LATEST 推翻的错误。
 
 reply 块两种形态：
-- 普通追加：`[REPLY LATEST 时间] 答复内容`（用户只是补充信息，task 状态没变）
+- 普通追加：`[<用户名> 回复 LATEST 时间] 答复内容`（用户只是补充信息，task 状态没变）
 - 恢复型（阻塞/review 转 todo 时）：
   ```
-  [REPLY LATEST 时间]
-  Q: AI 此前提的疑问 / Risk: AI 此前标的风险
+  [<用户名> 回复 LATEST 时间]
   A: 用户的答复
+  Q: AI 此前提的疑问 / Risk: AI 此前标的风险
   ```
-  这是完整 Q&A 上下文，AI 原疑问/风险已从 question/risk 字段迁移到此处，**字段会被清空属预期行为**，历史在 note 里保全。
+  这是完整 Q&A 上下文，**A 行在前是为了让用户一眼看见自己说了什么**；AI 原疑问/风险已从 question/risk 字段迁移到此处，**字段会被清空属预期行为**，历史在 note 里保全。
 
 reply 块只用于读取上下文，**不要清除或改写它**；done/review/block 自然会把新内容追加到 note 顶部，旧块自动保留为历史。
 
