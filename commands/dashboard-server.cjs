@@ -27,7 +27,7 @@ const SLUG_RE = /^[a-z0-9-]+$/;
 const DETAIL_ROUTE_RE = /^\/api\/projects\/([^/]+)$/;
 
 /** 任务列表 pick 字段（基础） */
-const TASK_PICK_FIELDS = ['id', 'desc', 'scope', 'priority', 'ctime', 'note', 'risk', 'question', 'model'];
+const TASK_PICK_FIELDS = ['id', 'desc', 'scope', 'priority', 'ctime', 'note', 'risk', 'question', 'model', 'tags'];
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -252,7 +252,7 @@ async function handleDelete(_req, res, rawSlug) {
 
 /**
  * 处理 POST /api/projects/:slug/add-row
- * body: { desc, scope, priority?, note? }
+ * body: { desc, scope, priority?, note?, tags?, model? }
  * @param {http.IncomingMessage} req
  * @param {http.ServerResponse} res
  * @param {string} rawSlug
@@ -275,6 +275,10 @@ async function handleAddRow(req, res, rawSlug) {
       scope: String(body.scope),
       priority: body.priority ? String(body.priority) : undefined,
       note: body.note ? String(body.note) : '',
+      // tags: 接受数组或逗号/竖线分隔字符串，addRowCore 内部 normalizeTags 统一
+      tags: body.tags == null ? undefined : body.tags,
+      // model: 空串 = 跟项目；undefined = 老前端没带，addRowCore 当空串处理
+      model: body.model == null ? undefined : String(body.model),
     });
     sendJson(res, 200, { ok: true, row: result });
   } catch (err) {

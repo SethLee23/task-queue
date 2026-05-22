@@ -291,6 +291,12 @@ body {
 .chip.prio-低 { background: var(--panel-2); color: var(--text-dim); }
 .chip.risk { background: rgba(245, 185, 72, 0.15); color: var(--yellow); }
 .chip.question { background: rgba(232, 93, 93, 0.15); color: var(--red); }
+.chip.model-chip {
+  background: var(--panel-2);
+  color: var(--text-dim);
+  opacity: 0.75;
+  font-size: 9px;
+}
 
 .card-extra {
   margin-top: 6px;
@@ -625,6 +631,75 @@ a.linkified:hover { text-decoration: underline; }
 .modal-error.upload-info { color: var(--text); opacity: 0.75; }
 .modal-error.upload-ok { color: var(--green, #2da44e); }
 .modal-error.upload-err { color: var(--red); }
+
+/* chip-input —— modal 内 tag 输入控件 */
+.chip-input {
+  position: relative;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 6px;
+  min-height: 30px;
+}
+.chip-input:focus-within { border-color: var(--accent); }
+.chip-input-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+.chip-input-field {
+  flex: 1;
+  min-width: 80px;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text);
+  font-size: 13px;
+  font-family: inherit;
+  padding: 2px 0;
+}
+.chip.tag-chip {
+  background: rgba(94, 158, 255, 0.15);
+  color: var(--accent, #5e9eff);
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding-right: 2px;
+}
+.chip-remove {
+  background: transparent;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 0 2px;
+  opacity: 0.7;
+}
+.chip-remove:hover { opacity: 1; }
+.chip-input-suggest {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 100%;
+  margin-top: 2px;
+  background: var(--panel, var(--bg));
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  z-index: 10;
+  max-height: 200px;
+  overflow-y: auto;
+  font-size: 12px;
+}
+.chip-input-suggest-item {
+  padding: 5px 8px;
+  cursor: pointer;
+  color: var(--text);
+}
+.chip-input-suggest-item:hover {
+  background: var(--panel-2);
+}
 
 .attach-list {
   display: flex;

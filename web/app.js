@@ -414,6 +414,12 @@ function renderCard(t, group) {
     el('span', { className: 'chip' }, t.scope || '—'),
     el('span', { className: `chip prio-${t.priority || '中'}` }, t.priority || '中'),
   ];
+  for (const tag of parseTagString(t.tags)) {
+    chips.push(el('span', { className: 'chip tag-chip', title: '标签' }, tag));
+  }
+  if (t.model) {
+    chips.push(el('span', { className: 'chip model-chip', title: `模型覆盖: ${t.model}` }, `🤖 ${t.model}`));
+  }
   if (t.risk) chips.push(el('span', { className: 'chip risk', title: t.risk }, '⚠ 风险'));
   if (t.question) chips.push(el('span', { className: 'chip question', title: t.question }, '? 疑问'));
 
@@ -697,6 +703,165 @@ function bindImeSafeInput(input, onValue) {
   });
 }
 
+/**
+ * 把 row.tags（管道分隔字符串）拆成数组；其他形态宽容处理。
+ * @param {unknown} raw
+ * @returns {string[]}
+ */
+function parseTagString(raw) {
+  if (raw == null || raw === '') return [];
+  if (Array.isArray(raw)) return raw.map(s => String(s).trim()).filter(Boolean);
+  return String(raw).split('|').map(s => s.trim()).filter(Boolean);
+}
+
+/**
+ * 扫描当前 state.detail 中所有任务的 tags 字段，按使用频次降序返回去重 tag 列表。
+ * 用于新增任务 modal 的自动补全候选。
+ * @param {object|null} detail
+ * @returns {string[]}
+ */
+function collectKnownTags(detail) {
+  if (!detail || !detail.tasks) return [];
+  const freq = new Map();
+  for (const group of ['in_progress', 'todo', 'review', 'blocked', 'done_today']) {
+    const arr = detail.tasks[group] || [];
+    for (const t of arr) {
+      for (const tag of parseTagString(t.tags)) {
+        freq.set(tag, (freq.get(tag) || 0) + 1);
+      }
+    }
+  }
+  return [...freq.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([t]) => t);
+}
+
+/**
+ * 构造一个 chip-input 控件。控件内部维护一个 chips 数组 + 一个文本输入,
+ * 通过逗号/回车提交新 chip,backspace 在空输入下删最后一个 chip,
+ * 输入时弹自动补全下拉(从 knownTags 里过滤 prefix)。
+ *
+ * 控件直接 mutate `form.tags`(string[]),调用方无需额外 wire-up。
+ *
+ * @param {{ tags: string[] }} form 调用方的 form state(引用透传,会被 mutate)
+ * @param {string[]} knownTags 候选 tag 集合
+ * @returns {HTMLElement}
+ */
+function buildTagInput(form, knownTags) {
+  form.tags = Array.isArray(form.tags) ? form.tags : [];
+
+  const wrap = el('div', { className: 'chip-input' });
+  const chipsBox = el('div', { className: 'chip-input-chips' });
+  const input = el('input', {
+    className: 'chip-input-field',
+    type: 'text',
+    placeholder: '回车 / 逗号添加；点击下拉补全',
+    autocomplete: 'off',
+    autocorrect: 'off',
+    autocapitalize: 'off',
+    spellcheck: 'false',
+  });
+  const suggestBox = el('div', { className: 'chip-input-suggest' });
+
+  function renderChips() {
+    chipsBox.innerHTML = '';
+    for (const t of form.tags) {
+      const chip = el('span', { className: 'chip tag-chip' }, t);
+      const x = el('button', {
+        className: 'chip-remove',
+        type: 'button',
+        title: '移除',
+        onclick: () => {
+          form.tags = form.tags.filter(x => x !== t);
+          renderChips();
+        },
+      }, '×');
+      chip.appendChild(x);
+      chipsBox.appendChild(chip);
+    }
+    chipsBox.appendChild(input);
+  }
+
+  function addTag(raw) {
+    const t = String(raw || '').trim();
+    if (!t) return false;
+    if (form.tags.includes(t)) return false;
+    form.tags.push(t);
+    renderChips();
+    return true;
+  }
+
+  function renderSuggest() {
+    suggestBox.innerHTML = '';
+    const q = input.value.trim().toLowerCase();
+    if (!q) { suggestBox.style.display = 'none'; return; }
+    const matches = knownTags
+      .filter(t => !form.tags.includes(t) && t.toLowerCase().includes(q))
+      .slice(0, 8);
+    if (matches.length === 0) { suggestBox.style.display = 'none'; return; }
+    for (const m of matches) {
+      const item = el('div', {
+        className: 'chip-input-suggest-item',
+        onmousedown: e => {
+          // mousedown 而非 click,避免 input 先 blur 导致下拉被 unmount。
+          e.preventDefault();
+          addTag(m);
+          input.value = '';
+          renderSuggest();
+          input.focus();
+        },
+      }, m);
+      suggestBox.appendChild(item);
+    }
+    suggestBox.style.display = 'block';
+  }
+
+  let composing = false;
+  input.addEventListener('compositionstart', () => { composing = true; });
+  input.addEventListener('compositionend', () => { composing = false; renderSuggest(); });
+  input.addEventListener('input', () => {
+    if (composing) return;
+    // 用户输入逗号 → 自动断词,把逗号前的所有段都 commit。
+    if (input.value.includes(',') || input.value.includes('，')) {
+      const parts = input.value.split(/[,，]/);
+      const tail = parts.pop();
+      for (const p of parts) addTag(p);
+      input.value = tail;
+    }
+    renderSuggest();
+  });
+  input.addEventListener('keydown', e => {
+    if (composing || e.isComposing) return;
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      if (input.value.trim()) {
+        addTag(input.value);
+        input.value = '';
+        renderSuggest();
+      }
+    } else if (e.key === 'Backspace' && input.value === '' && form.tags.length > 0) {
+      form.tags = form.tags.slice(0, -1);
+      renderChips();
+    }
+  });
+  input.addEventListener('blur', () => {
+    // blur 时把残留输入也 commit,避免用户点"添加"前忘了回车。
+    setTimeout(() => {
+      if (input.value.trim()) {
+        addTag(input.value);
+        input.value = '';
+      }
+      suggestBox.style.display = 'none';
+    }, 120);
+  });
+
+  renderChips();
+  wrap.appendChild(chipsBox);
+  wrap.appendChild(suggestBox);
+  suggestBox.style.display = 'none';
+  return wrap;
+}
+
 function renderAddModal() {
   const existing = document.getElementById('add-modal');
   if (existing) existing.remove();
@@ -726,6 +891,24 @@ function renderAddModal() {
     ...['高', '中', '低'].map(p => el('option', { value: p, selected: p === form.priority ? '' : null }, p)),
   );
   prioSelect.addEventListener('change', e => { form.priority = e.target.value; });
+
+  // 模型选项: 空串 = 跟项目(由 desiredModel 决定),否则覆盖
+  const MODEL_OPTIONS = [
+    { value: '',       label: '跟项目' },
+    { value: 'opus',   label: 'opus' },
+    { value: 'sonnet', label: 'sonnet' },
+    { value: 'haiku',  label: 'haiku' },
+  ];
+  const modelSelect = el('select', { className: 'modal-input' },
+    ...MODEL_OPTIONS.map(o => el(
+      'option',
+      { value: o.value, selected: o.value === (form.model || '') ? '' : null },
+      o.label,
+    )),
+  );
+  modelSelect.addEventListener('change', e => { form.model = e.target.value; });
+
+  const tagInput = buildTagInput(form, collectKnownTags(state.detail));
 
   const noteInput = el('input', {
     className: 'modal-input',
@@ -762,7 +945,9 @@ function renderAddModal() {
       el('div', { className: 'modal-row' },
         el('label', { className: 'modal-label' }, 'scope', scopeSelect),
         el('label', { className: 'modal-label' }, '优先级', prioSelect),
+        el('label', { className: 'modal-label' }, '模型', modelSelect),
       ),
+      el('label', { className: 'modal-label' }, '标签', tagInput),
       el('label', { className: 'modal-label' }, '备注', noteInput),
       attachContainer,
       errorBox,
@@ -783,6 +968,8 @@ function openAddModal() {
     scope: scopes[0] || '',
     priority: '中',
     note: '',
+    tags: [],
+    model: '',
     attachments: [],
   };
   renderAddModal();
@@ -926,6 +1113,8 @@ async function submitAddRow() {
     scope: form.scope,
     priority: form.priority,
     note: form.note.trim(),
+    tags: Array.isArray(form.tags) ? form.tags : [],
+    model: form.model || '',
   });
   if (r.ok) {
     closeAddModal();
