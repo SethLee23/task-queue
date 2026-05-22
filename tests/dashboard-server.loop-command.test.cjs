@@ -38,7 +38,7 @@ test('GET /api/projects/:slug/loop-command 返回完整命令 + 替换好 ${PROJ
 
   // 必须以 cd 开头并包含 claude '/loop
   assert.ok(body.command.startsWith(`cd '`), '应当以 cd ' + "'" + ' 开头');
-  assert.ok(body.command.includes(` && claude '/loop `), '应当包含 && claude /loop 段');
+  assert.ok(body.command.includes(` && claude --dangerously-skip-permissions '/loop `), '应当包含 && claude --dangerously-skip-permissions /loop 段');
 
   // PROJECT_ROOT 占位符必须已经被替换
   assert.ok(!body.command.includes('${PROJECT_ROOT}'), 'PROJECT_ROOT 应被替换');

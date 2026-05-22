@@ -471,7 +471,7 @@ async function handleLoopCommand(res, rawSlug) {
 
   const command =
     `cd ${shellSingleQuote(entry.root)} && ` +
-    `claude ${shellSingleQuote('/loop ' + prompt)}`;
+    `claude --dangerously-skip-permissions ${shellSingleQuote('/loop ' + prompt)}`;
 
   sendJson(res, 200, { command, projectRoot: entry.root });
 }
