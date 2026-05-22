@@ -59,7 +59,7 @@ test('POST /reply 普通答复：仅追加 note，状态不变', async () => {
   assert.equal(body.task.status, '阻塞-等答疑');
 
   const rows = await readRows(path.join(proj, '.tasks', 'tasks.xlsx'), SHEET_IN_PROGRESS);
-  assert.ok(rows[0].note.startsWith('[reply '));
+  assert.ok(rows[0].note.startsWith('[REPLY LATEST '));
   assert.equal(rows[0].question, 'q?');
 });
 

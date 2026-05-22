@@ -7,26 +7,28 @@ const {
 } = require('../lib/workbook.cjs');
 const { STATES, canTransition } = require('../lib/states.cjs');
 const { Logger } = require('../lib/logger.cjs');
+const { localTimestamp } = require('../lib/datetime.cjs');
 
 /**
- * 本地 YYYY-MM-DD HH:mm（不要 ISO，便于人读）。
+ * 把已有 note 里所有 `[REPLY LATEST ...]` 标签降级为 `[reply OBSOLETE ...]`，
+ * 让新写入的 LATEST 始终唯一。AI 据 LATEST 锁定最新指令，OBSOLETE 仅作上下文。
+ * @param {string} note
  * @returns {string}
  */
-function localTimestamp() {
-  const d = new Date();
-  const pad = n => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} `
-       + `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+function demoteLatestTags(note) {
+  return note.replace(/\[REPLY LATEST (\d{4}-\d{2}-\d{2} \d{2}:\d{2})\]/g, '[reply OBSOLETE $1]');
 }
 
 /**
  * 核心实现，供 CLI 与 dashboard server 共用。
  *
  * 行为：
- * - 把 reply 以 `[reply 时间] reply\n---\n` 前缀写到 note 顶部
+ * - 把 reply 以 `[REPLY LATEST 时间] ...\n---\n` 前缀写到 note 顶部；
+ *   写入前先把 note 里所有已存在的 `[REPLY LATEST ...]` 降级为 `[reply OBSOLETE ...]`，
+ *   保证整张 note 最多只有 1 个 LATEST 块（AI 据此锁定最新指令，避免被早期 reply 误导）
  * - resume=true 时：
  *   - 当前状态必须 ∈ {BLOCKED, REVIEW}
- *   - 状态改为 TODO，对应阻塞/风险字段清空
+ *   - 状态改为 TODO，对应阻塞/风险字段清空，原内容并入 LATEST 块的 Q/Risk 行
  *
  * @param {string} projectRoot 项目根目录
  * @param {{ id: number|string, reply: string, resume?: boolean }} fields
@@ -51,15 +53,15 @@ async function replyCore(projectRoot, fields) {
     throw new Error(`非法转换：${target.status} → ${STATES.TODO}`);
   }
 
-  const oldNote = String(target.note || '');
+  const oldNote = demoteLatestTags(String(target.note || ''));
   const ts = localTimestamp();
   let block;
   if (resume && target.status === STATES.BLOCKED && String(target.question || '').trim()) {
-    block = `[reply ${ts}]\nQ: ${String(target.question).trim()}\nA: ${replyText}`;
+    block = `[REPLY LATEST ${ts}]\nQ: ${String(target.question).trim()}\nA: ${replyText}`;
   } else if (resume && target.status === STATES.REVIEW && String(target.risk || '').trim()) {
-    block = `[reply ${ts}]\nRisk: ${String(target.risk).trim()}\nA: ${replyText}`;
+    block = `[REPLY LATEST ${ts}]\nRisk: ${String(target.risk).trim()}\nA: ${replyText}`;
   } else {
-    block = `[reply ${ts}] ${replyText}`;
+    block = `[REPLY LATEST ${ts}] ${replyText}`;
   }
   const newNote = oldNote ? `${block}\n---\n${oldNote}` : block;
 

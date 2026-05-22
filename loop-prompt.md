@@ -61,22 +61,24 @@ node ~/.claude/skills/task-queue/tasks.cjs next ${PROJECT_ROOT}
 node ~/.claude/skills/task-queue/tasks.cjs claim ${PROJECT_ROOT} <id>
 ```
 
-claim 完成后，**必须**检查 `note` 字段顶部是否含 `[reply YYYY-MM-DD HH:mm] ...\n---\n...` 块：
+claim 完成后，**必须**检查 `note` 字段顶部是否含 `[REPLY LATEST YYYY-MM-DD HH:mm] ...` 块：
 
-- 有 → 这是用户对此前 review/block 的答复，**必须**先把答复完整读完再开工；按答复要求调整方案/范围/做法，不要重复犯之前被指出的问题
+- 有 → 这是用户对此前 review/block 的**最新**答复，**必须**先把答复完整读完再开工；按答复要求调整方案/范围/做法
 - 无 → 正常按 desc 执行
 
-reply 块有两种形态：
-- 普通追加：`[reply 时间] 答复内容`（用户只是补充信息，task 状态没变）
+note 里只可能有 **1 个** `[REPLY LATEST ...]` 块（每次新 reply 都会自动把现存 LATEST 降级为 OBSOLETE）。看到 `[reply OBSOLETE ...]` 块表示这是更早的历史回复，**仅作背景理解，不要按它执行**——否则你会重复犯之前已经被新 LATEST 推翻的错误。
+
+reply 块两种形态：
+- 普通追加：`[REPLY LATEST 时间] 答复内容`（用户只是补充信息，task 状态没变）
 - 恢复型（阻塞/review 转 todo 时）：
   ```
-  [reply 时间]
+  [REPLY LATEST 时间]
   Q: AI 此前提的疑问 / Risk: AI 此前标的风险
   A: 用户的答复
   ```
   这是完整 Q&A 上下文，AI 原疑问/风险已从 question/risk 字段迁移到此处，**字段会被清空属预期行为**，历史在 note 里保全。
 
-reply 块只用于读取上下文，**不要清除或改写它**；done/review/block 自然会把新内容追加到 note 顶部，旧 reply 自动保留为历史。
+reply 块只用于读取上下文，**不要清除或改写它**；done/review/block 自然会把新内容追加到 note 顶部，旧块自动保留为历史。
 
 ## Step 3: 执行任务
 
@@ -91,17 +93,42 @@ reply 块只用于读取上下文，**不要清除或改写它**；done/review/b
 
 ## Step 4: 根据结果调用结束命令
 
-四类结局（必须三选一）：
+四类结局（必须三选一）。**路径引用约定**（写 `<风险描述>` / `<疑问>` / done 后追加 note 时都适用）：
+
+- 引用项目内文件 → 写**相对项目根**的完整路径：`web/src/foo.tsx`、`web/src/foo.tsx:42`、`web/src/foo.tsx:42:7`
+- 引用项目外文件 → 写**绝对路径**：`/Users/...` 或 `~/.claude/...`
+- 引用 URL → 完整 `https://...`
+- **禁止**：单独写文件名（如 `foo.tsx`）—— dashboard 解析为相对根目录会找不到；除非该文件确实在项目根目录
+
+dashboard 会自动识别这些路径并渲染成可点击的链接（点击用 VS Code 打开，没装就用系统默认）。完整路径是让点击真能跳到文件的硬要求。
 
 ### 4a. 全部成功
 
 ```
-node ~/.claude/skills/task-queue/tasks.cjs done ${PROJECT_ROOT} <id>
+node ~/.claude/skills/task-queue/tasks.cjs done ${PROJECT_ROOT} <id> "<summary>"
 ```
 
-done 命令内部决定是否 auto commit：
-- scope.autoCommit=true 且无 inferModule 失败 → 自动 commit + 归档
-- 否则 → 自动转 review 流程
+summary **必传且不能省略**,是给人看的"完成回复",落到任务 note 顶部 `[done 时间]` 块,dashboard "今日完成"区直接显示。空 summary = 用户在 dashboard 上看不到你做了什么/答了什么 = 用户会愤怒。
+
+按任务类型决定 summary 内容与长度:
+
+**执行型任务**(改代码 / 加测试 / 配置变更等):1-2 句话简述
+- 关键改动文件/模块(超过 3 个只点一两个代表)
+- 关键决策或权衡(为什么这么做,不是怎么做)
+- 后续注意事项(若有)
+
+示例:
+- `"改 ReqConfig.tsx 把'请求名称' label 简化为'名称';顺手把 minWidth 从 120 调到 96 收紧表格"`
+- `"Playwright config + 1 个 router e2e case 落地;约定 baseURL=127.0.0.1:3000 复用 dev server"`
+
+**回答型任务**(desc 含"是什么"/"为什么"/"怎么"/"?"/"解释"/"分析"等,或贴图问"这是啥"):summary **就是完整答案**,放开写。dashboard "今日完成"区是单列宽栏,有足够空间显示多段落长文本。换行 + 文件路径直接写 —— linkifyText 会自动把路径/URL 渲染成可点击链接。
+
+示例:
+- `"这 5 个文件分两组:\ndocs/ 内容(按生成顺序):\n1. para-ui-issues.csv — 历史手记,14 条具体问题(TextField onChange...)\n2. para-ui-reflections.md — 组件级反思笔记\n3. scripts/gen-findings.cjs — 单源生成脚本,把上面两个手记合成下面产物\n4. para-ui-findings.md — 给 paraui 团队看的 POC 自检报告 Markdown 版\n5. para-ui-findings.xlsx — 同源 Excel 版\n\n简化:csv + reflections.md 是原料,gen-findings.cjs 是加工脚本,findings.md/.xlsx 是成品"`
+
+done 命令内部决定是否 auto commit:
+- scope.autoCommit=true 且无 inferModule 失败 → 自动 commit + 归档(note 顶部块含 commit hash · 【模块】 版本号 + summary)
+- 否则 → 自动转 review 流程(summary 在这条路径会丢失,你可以把关键信息塞进下面 4b 的 review 风险描述里)
 
 ### 4b. 软失败（功能完成但有担心需 review）
 
@@ -141,7 +168,7 @@ PushNotification(message: "任务 #<id> <短结果>: <desc 前 60 字>", status:
 node ~/.claude/skills/task-queue/tasks.cjs test-push "任务 #<id> <短结果>: <desc 前 60 字>"
 ```
 
-默认走 `system-events-dialog` 通道，弹一个浮在所有窗口最前的对话框，5 秒后自动消失。这条路径绕开通知中心 codesign 限制，是本机唯一稳定可见的桌面提醒方式（macOS 15.6 已验证 terminal-notifier / osascript display notification 都会被静默丢弃）。
+默认走 `system-events-dialog` 通道，弹一个浮在所有窗口最前的对话框，60 秒后自动消失（可用 `TASK_QUEUE_DIALOG_TIMEOUT` 覆盖）。这条路径绕开通知中心 codesign 限制，是本机唯一稳定可见的桌面提醒方式（macOS 15.6 已验证 terminal-notifier / osascript display notification 都会被静默丢弃）。
 
 **两条都要发**，顺序不限。消息文案保持一致，例：
 

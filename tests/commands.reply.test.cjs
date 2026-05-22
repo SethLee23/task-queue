@@ -32,7 +32,7 @@ const baseRow = {
   note: '原备注', question: '', risk: '', ctime: '2026-05-20T10:00:00Z', ftime: '',
 };
 
-test('reply 不带 resume：仅在 note 顶部追加 [reply ...] 块，状态不变', async () => {
+test('reply 不带 resume：在 note 顶部追加 [REPLY LATEST ...] 块，状态不变', async () => {
   const proj = await setupProject([{ ...baseRow, status: '阻塞-等答疑', question: '问题1?' }]);
   await replyCore(proj, { id: 1, reply: '答复内容' });
 
@@ -40,11 +40,11 @@ test('reply 不带 resume：仅在 note 顶部追加 [reply ...] 块，状态不
   const row = rows.find(r => String(r.id) === '1');
   assert.equal(row.status, '阻塞-等答疑');
   assert.equal(row.question, '问题1?', 'question 未被清空');
-  assert.ok(/^\[reply \d{4}-\d{2}-\d{2} \d{2}:\d{2}\] 答复内容\n---\n原备注$/.test(row.note),
-    `note 格式应为时间戳 + 答复 + 分隔符 + 原 note，实际: ${row.note}`);
+  assert.ok(/^\[REPLY LATEST \d{4}-\d{2}-\d{2} \d{2}:\d{2}\] 答复内容\n---\n原备注$/.test(row.note),
+    `note 格式应为 LATEST 时间戳 + 答复 + 分隔符 + 原 note，实际: ${row.note}`);
 });
 
-test('reply 带 resume：blocked → todo 且 question 内容迁移进 note', async () => {
+test('reply 带 resume：blocked → todo 且 question 内容迁移进 LATEST 块', async () => {
   const proj = await setupProject([{ ...baseRow, status: '阻塞-等答疑', question: '问题1?' }]);
   await replyCore(proj, { id: 1, reply: '解阻答复', resume: true });
 
@@ -52,11 +52,11 @@ test('reply 带 resume：blocked → todo 且 question 内容迁移进 note', as
   const row = rows.find(r => String(r.id) === '1');
   assert.equal(row.status, '待办');
   assert.equal(row.question, '', 'question 字段应被清空');
-  assert.ok(/^\[reply \d{4}-\d{2}-\d{2} \d{2}:\d{2}\]\nQ: 问题1\?\nA: 解阻答复/.test(row.note),
-    `note 应含 Q/A 格式，实际: ${row.note}`);
+  assert.ok(/^\[REPLY LATEST \d{4}-\d{2}-\d{2} \d{2}:\d{2}\]\nQ: 问题1\?\nA: 解阻答复/.test(row.note),
+    `note 应含 LATEST + Q/A 格式，实际: ${row.note}`);
 });
 
-test('reply 带 resume：review → todo 且 risk 内容迁移进 note', async () => {
+test('reply 带 resume：review → todo 且 risk 内容迁移进 LATEST 块', async () => {
   const proj = await setupProject([{ ...baseRow, status: '已完成-待review', risk: '改了热路径' }]);
   await replyCore(proj, { id: 1, reply: 'reject 这条', resume: true });
 
@@ -64,8 +64,26 @@ test('reply 带 resume：review → todo 且 risk 内容迁移进 note', async (
   const row = rows.find(r => String(r.id) === '1');
   assert.equal(row.status, '待办');
   assert.equal(row.risk, '', 'risk 字段应被清空');
-  assert.ok(/^\[reply \d{4}-\d{2}-\d{2} \d{2}:\d{2}\]\nRisk: 改了热路径\nA: reject 这条/.test(row.note),
-    `note 应含 Risk/A 格式，实际: ${row.note}`);
+  assert.ok(/^\[REPLY LATEST \d{4}-\d{2}-\d{2} \d{2}:\d{2}\]\nRisk: 改了热路径\nA: reject 这条/.test(row.note),
+    `note 应含 LATEST + Risk/A 格式，实际: ${row.note}`);
+});
+
+test('连续多次 reply：旧 LATEST 自动降级为 OBSOLETE，新 LATEST 唯一', async () => {
+  const proj = await setupProject([{ ...baseRow, status: '阻塞-等答疑', question: 'q1?' }]);
+  await replyCore(proj, { id: 1, reply: '第一次答复', resume: true });
+  // 第一次 resume 后状态变 TODO，再 reply 不能再 resume
+  await replyCore(proj, { id: 1, reply: '第二次补充' });
+  await replyCore(proj, { id: 1, reply: '第三次澄清' });
+
+  const rows = await readRows(path.join(proj, '.tasks', 'tasks.xlsx'), SHEET_IN_PROGRESS);
+  const row = rows.find(r => String(r.id) === '1');
+  const latestCount = (row.note.match(/\[REPLY LATEST /g) || []).length;
+  const obsoleteCount = (row.note.match(/\[reply OBSOLETE /g) || []).length;
+  assert.equal(latestCount, 1, `应仅 1 个 LATEST 块，实际 ${latestCount}：${row.note}`);
+  assert.equal(obsoleteCount, 2, `应有 2 个 OBSOLETE 块，实际 ${obsoleteCount}：${row.note}`);
+  // 最顶部必须是最新的（第三次澄清）
+  assert.ok(/^\[REPLY LATEST [^\]]+\] 第三次澄清/.test(row.note),
+    `note 顶部应是第三次答复，实际: ${row.note.slice(0, 200)}`);
 });
 
 test('reply 带 resume 在非 blocked/review 状态拒绝', async () => {
