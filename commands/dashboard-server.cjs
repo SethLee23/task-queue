@@ -27,7 +27,7 @@ const SLUG_RE = /^[a-z0-9-]+$/;
 const DETAIL_ROUTE_RE = /^\/api\/projects\/([^/]+)$/;
 
 /** 任务列表 pick 字段（基础） */
-const TASK_PICK_FIELDS = ['id', 'desc', 'scope', 'priority', 'ctime', 'note', 'risk', 'question', 'model', 'tags'];
+const TASK_PICK_FIELDS = ['id', 'desc', 'scope', 'priority', 'ctime', 'note', 'risk', 'question', 'model', 'tags', 'checklist'];
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -572,6 +572,83 @@ async function handleTaskModel(req, res, rawSlug, rawTaskId) {
 }
 
 /**
+ * 处理 POST /api/projects/:slug/tasks/:id/checklist
+ * body: { items: [{text, done}, ...] } 全量替换 checklist
+ * @param {http.IncomingMessage} req
+ * @param {http.ServerResponse} res
+ * @param {string} rawSlug
+ * @param {string} rawTaskId
+ */
+async function handleTaskChecklist(req, res, rawSlug, rawTaskId) {
+  const slug = decodeURIComponent(rawSlug);
+  if (!SLUG_RE.test(slug)) return sendJson(res, 400, { error: 'invalid slug format' });
+
+  const entry = registryList().find(p => p.slug === slug);
+  if (!entry) return sendJson(res, 404, { error: 'project not found' });
+
+  const body = await readJsonBody(req).catch(() => null);
+  if (!body || !Array.isArray(body.items)) {
+    return sendJson(res, 400, { error: 'body 必须含 items 数组' });
+  }
+
+  try {
+    const { applyChecklistMutation } = require('../lib/checklist-apply.cjs');
+    const { parseChecklist } = require('../lib/checklist.cjs');
+    // parseChecklist 既清洗又验证: text 必填,done 转 boolean,丢弃空 text
+    const next = parseChecklist(body.items);
+    const result = await applyChecklistMutation(entry.root, rawTaskId, () => next);
+    sendJson(res, 200, { ok: true, id: result.id, items: result.after });
+  } catch (err) {
+    sendJson(res, 400, { error: String(err.message) });
+  }
+}
+
+/**
+ * 处理 GET /api/projects/:slug/history?days=30&limit=500
+ * 返回归档表(已完结)中过去 N 天的 done 任务，按 ftime 倒序。
+ * @param {http.IncomingMessage} req
+ * @param {http.ServerResponse} res
+ * @param {string} rawSlug
+ */
+async function handleGetHistory(req, res, rawSlug) {
+  const slug = decodeURIComponent(rawSlug);
+  if (!SLUG_RE.test(slug)) return sendJson(res, 400, { error: 'invalid slug format' });
+
+  const entry = registryList().find(p => p.slug === slug);
+  if (!entry) return sendJson(res, 404, { error: 'project not found' });
+
+  const parsed = url.parse(req.url, true);
+  let days = Number(parsed.query?.days);
+  if (!Number.isFinite(days) || days <= 0) days = 30;
+  if (days > 365) days = 365;
+  let limit = Number(parsed.query?.limit);
+  if (!Number.isFinite(limit) || limit <= 0) limit = 500;
+  if (limit > 5000) limit = 5000;
+
+  const xlsxPath = path.join(entry.root, '.tasks', 'tasks.xlsx');
+  if (!fs.existsSync(xlsxPath)) {
+    return sendJson(res, 200, { items: [], total: 0, days, limit });
+  }
+
+  const archRows = await readRows(xlsxPath, SHEET_ARCHIVED);
+  const cutoffMs = Date.now() - days * 86400000;
+  const items = [];
+  for (const row of archRows) {
+    if (row.status !== STATES.DONE || !row.ftime) continue;
+    const d = row.ftime instanceof Date ? row.ftime : new Date(/** @type {string} */ (row.ftime));
+    const t = d.getTime();
+    if (!Number.isFinite(t) || t < cutoffMs) continue;
+    const picked = pickFields(row, TASK_PICK_FIELDS);
+    picked.ftime = d.toISOString();
+    items.push(picked);
+  }
+  items.sort((a, b) => String(b.ftime || '').localeCompare(String(a.ftime || '')));
+  const total = items.length;
+  if (items.length > limit) items.length = limit;
+  sendJson(res, 200, { items, total, days, limit });
+}
+
+/**
  * 处理 POST /api/cleanup-missing
  * 遍历注册表，把 root 不存在或 .tasks 目录缺失的条目移出注册表，
  * 不触碰任何文件系统目录内容。
@@ -967,6 +1044,18 @@ function handle(req, res) {
   const taskModelM = pathname.match(/^\/api\/projects\/([^/]+)\/tasks\/([^/]+)\/model$/);
   if (taskModelM && req.method === 'POST') {
     handleTaskModel(req, res, taskModelM[1], taskModelM[2]).catch(err => sendJson(res, 500, { error: String(err.message) }));
+    return;
+  }
+
+  const checklistM = pathname.match(/^\/api\/projects\/([^/]+)\/tasks\/([^/]+)\/checklist$/);
+  if (checklistM && req.method === 'POST') {
+    handleTaskChecklist(req, res, checklistM[1], checklistM[2]).catch(err => sendJson(res, 500, { error: String(err.message) }));
+    return;
+  }
+
+  const historyM = pathname.match(/^\/api\/projects\/([^/]+)\/history$/);
+  if (historyM && req.method === 'GET') {
+    handleGetHistory(req, res, historyM[1]).catch(err => sendJson(res, 500, { error: String(err.message) }));
     return;
   }
 

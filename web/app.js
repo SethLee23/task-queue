@@ -12,6 +12,7 @@ const state = {
   replyModal: null,
   imagePreview: null,
   cardDetailModal: null,
+  historyModal: null,
 };
 
 const LONG_TEXT_THRESHOLD = 120;
@@ -206,7 +207,45 @@ function closeCardDetailModal() {
 }
 
 function handleCardDetailKey(e) {
-  if (e.key === 'Escape') closeCardDetailModal();
+  if (e.key === 'Escape') { closeCardDetailModal(); return; }
+  if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+    // 焦点在输入控件里时让位给原生光标移动
+    const ae = document.activeElement;
+    const tag = ae && ae.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || (ae && ae.isContentEditable)) return;
+    const siblings = getCardDetailSiblings();
+    if (siblings.length <= 1) return;
+    const cur = state.cardDetailModal && state.cardDetailModal.task;
+    if (!cur) return;
+    const idx = siblings.findIndex(x => String(x.id) === String(cur.id));
+    if (idx < 0) return;
+    const nextIdx = e.key === 'ArrowLeft'
+      ? (idx === 0 ? siblings.length - 1 : idx - 1)
+      : (idx === siblings.length - 1 ? 0 : idx + 1);
+    state.cardDetailModal.task = siblings[nextIdx];
+    e.preventDefault();
+    renderCardDetailModal();
+  }
+}
+
+/**
+ * 推导 cardDetailModal 当前的"兄弟任务列表",用于 ← / → 切换:
+ * - 当 history modal 也开着,且任务在 history items 里 → 用 history 列表
+ * - 否则从看板对应 group 取
+ */
+function getCardDetailSiblings() {
+  const m = state.cardDetailModal;
+  if (!m || !m.task) return [];
+  const tid = String(m.task.id);
+  if (state.historyModal && Array.isArray(state.historyModal.items)) {
+    if (state.historyModal.items.some(x => String(x.id) === tid)) {
+      return state.historyModal.items;
+    }
+  }
+  if (state.detail && state.detail.tasks && Array.isArray(state.detail.tasks[m.group])) {
+    return state.detail.tasks[m.group];
+  }
+  return [];
 }
 
 function formatTime(s) {
@@ -222,6 +261,280 @@ const GROUP_LABEL = {
   blocked: '阻塞',
   done: '已完成',
 };
+
+/**
+ * 构造 detail modal 内的子任务清单 section。
+ * - done 状态只读:只显示进度条 + 勾选状态(灰)
+ * - 其它状态可交互:checkbox 切换 / 点文本编辑 / × 删除 / 底部输入框追加
+ *
+ * 所有 mutation 走全量 PUT(submitChecklistUpdate),失败回滚由后端拒绝触发。
+ *
+ * @param {object} task
+ * @param {string} group
+ * @returns {HTMLElement}
+ */
+function buildChecklistSection(task, group) {
+  const readOnly = group === 'done';
+  const items = parseChecklistVal(task.checklist);
+  const sum = checklistSummary(items);
+
+  const header = el('div', { className: 'detail-section-title' },
+    items.length === 0 ? '子任务清单' : `子任务清单 ${sum.done}/${sum.total}`,
+  );
+
+  // 进度条 —— 有 item 才显示
+  const progressBar = items.length > 0
+    ? el('div', { className: 'checklist-progress' },
+        el('div', { className: 'checklist-progress-bar' },
+          el('div', {
+            className: 'checklist-progress-fill',
+            style: `width: ${Math.round(sum.ratio * 100)}%`,
+          }),
+        ),
+        el('div', { className: 'checklist-progress-meta' },
+          items.length === 0 ? '—' : `${Math.round(sum.ratio * 100)}%`,
+        ),
+      )
+    : null;
+
+  // 找到"当前"项(第一个未勾)的下标,用来加 .current 高亮
+  const currentIdx = items.findIndex(it => !it.done);
+
+  // 行渲染
+  const rows = items.map((it, idx) => {
+    const checkbox = el('input', {
+      type: 'checkbox',
+      className: 'checklist-checkbox',
+      ...(it.done ? { checked: '' } : {}),
+      ...(readOnly ? { disabled: '' } : {}),
+    });
+    checkbox.addEventListener('change', () => {
+      if (readOnly) return;
+      const next = items.map((x, i) => i === idx ? { ...x, done: checkbox.checked } : x);
+      submitChecklistUpdate(task.id, next);
+    });
+
+    // 文本:点击切换成 input;失焦/回车 commit
+    let textNode;
+    if (readOnly) {
+      textNode = el('span', { className: 'checklist-text' + (it.done ? ' done' : '') }, it.text);
+    } else {
+      textNode = el('span', {
+        className: 'checklist-text' + (it.done ? ' done' : '') + (idx === currentIdx ? ' current' : ''),
+        title: '点击编辑',
+        onclick: () => {
+          // 替换成 input
+          const input = el('input', {
+            type: 'text',
+            className: 'checklist-text-edit',
+            value: it.text,
+          });
+          let committed = false;
+          const commit = () => {
+            if (committed) return;
+            committed = true;
+            const newText = input.value.trim();
+            if (!newText || newText === it.text) {
+              renderCardDetailModal();
+              return;
+            }
+            const next = items.map((x, i) => i === idx ? { ...x, text: newText } : x);
+            submitChecklistUpdate(task.id, next);
+          };
+          input.addEventListener('blur', commit);
+          input.addEventListener('keydown', e => {
+            if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+            if (e.key === 'Escape') { committed = true; renderCardDetailModal(); }
+          });
+          textNode.replaceWith(input);
+          input.focus();
+          input.select();
+        },
+      }, it.text);
+    }
+
+    const children = [checkbox, textNode];
+    if (idx === currentIdx && !readOnly) {
+      children.push(el('span', { className: 'checklist-current-tag' }, '当前'));
+    }
+    if (!readOnly) {
+      children.push(el('button', {
+        className: 'checklist-del',
+        type: 'button',
+        title: '删除',
+        onclick: () => {
+          if (!confirm(`删除「${it.text}」?`)) return;
+          const next = items.filter((_, i) => i !== idx);
+          submitChecklistUpdate(task.id, next);
+        },
+      }, '×'));
+    }
+
+    return el('div', { className: 'checklist-row' + (it.done ? ' done' : '') }, ...children);
+  });
+
+  // 底部:加一项 input
+  let addInput = null;
+  if (!readOnly) {
+    addInput = el('input', {
+      type: 'text',
+      className: 'checklist-add',
+      placeholder: items.length === 0 ? '加第一项 (回车确认)…' : '+ 加一项 (回车确认)…',
+    });
+    addInput.addEventListener('keydown', e => {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      const text = addInput.value.trim();
+      if (!text) return;
+      const next = [...items, { text, done: false }];
+      addInput.value = '';
+      submitChecklistUpdate(task.id, next);
+    });
+  }
+
+  const bodyChildren = [];
+  if (progressBar) bodyChildren.push(progressBar);
+  bodyChildren.push(...rows);
+  if (addInput) bodyChildren.push(addInput);
+  if (items.length === 0 && readOnly) {
+    bodyChildren.push(el('div', { className: 'checklist-empty' }, '(无)'));
+  }
+
+  return el('div', { className: 'detail-section detail-section-checklist' },
+    header,
+    el('div', { className: 'detail-section-body' }, ...bodyChildren),
+  );
+}
+
+const NOTE_HEADER_RE = /^\[(.+?)\]\s*$/;
+
+function parseNoteBlocks(note) {
+  if (!note) return [];
+  const lines = String(note).replace(/\r\n/g, '\n').split('\n');
+  const blocks = [];
+  let cur = null;
+  for (const line of lines) {
+    const m = line.match(NOTE_HEADER_RE);
+    if (m) {
+      if (cur) blocks.push(cur);
+      cur = { header: m[1], bodyLines: [] };
+    } else {
+      if (!cur) cur = { header: null, bodyLines: [] };
+      cur.bodyLines.push(line);
+    }
+  }
+  if (cur) blocks.push(cur);
+  for (const b of blocks) {
+    while (b.bodyLines.length && b.bodyLines[b.bodyLines.length - 1].trim() === '') b.bodyLines.pop();
+    while (b.bodyLines.length && b.bodyLines[0].trim() === '') b.bodyLines.shift();
+  }
+  return blocks.filter(b => b.header || b.bodyLines.length);
+}
+
+function classifyNoteBlock(block) {
+  if (!block.header) return { kind: 'other', header: null };
+  const h = block.header.trim();
+  let m;
+  m = h.match(/^done\s+(.+)$/i);
+  if (m) return { kind: 'done', when: m[1].trim() };
+  m = h.match(/^(.+?)\s+回复\s+(LATEST|OBSOLETE)\s+(.+)$/i);
+  if (m) return { kind: 'reply', user: m[1].trim(), latest: m[2].toUpperCase() === 'LATEST', when: m[3].trim() };
+  m = h.match(/^reply\s+(LATEST|OBSOLETE)\s+(.+)$/i);
+  if (m) return { kind: 'reply', user: null, latest: m[1].toUpperCase() === 'LATEST', when: m[2].trim() };
+  return { kind: 'other', header: h };
+}
+
+function splitReplyBody(bodyLines) {
+  let answerIdx = -1;
+  for (let i = 0; i < bodyLines.length; i++) {
+    if (/^A:\s*/i.test(bodyLines[i])) { answerIdx = i; break; }
+  }
+  if (answerIdx < 0) return { contextLines: [], answerLines: bodyLines.slice() };
+  return {
+    contextLines: bodyLines.slice(0, answerIdx),
+    answerLines: [bodyLines[answerIdx].replace(/^A:\s*/i, ''), ...bodyLines.slice(answerIdx + 1)],
+  };
+}
+
+function splitContextLine(line) {
+  const m = line.match(/^(Q|Risk):\s*(.*)$/i);
+  if (!m) return { label: null, text: line };
+  return { label: m[1].toLowerCase() === 'risk' ? '⚠ Risk' : '? 疑问', text: m[2] };
+}
+
+function renderNoteBlock(block) {
+  const meta = classifyNoteBlock(block);
+  const bodyText = block.bodyLines.join('\n');
+
+  if (meta.kind === 'done') {
+    return el('div', { className: 'note-block note-block-done' },
+      el('div', { className: 'note-block-header' },
+        el('span', { className: 'note-block-chip note-chip-done' }, '✓ 完成'),
+        el('span', { className: 'note-block-when' }, meta.when || ''),
+      ),
+      el('div', { className: 'note-block-body' }, ...linkifyText(bodyText)),
+    );
+  }
+
+  if (meta.kind === 'reply') {
+    const cls = meta.latest ? 'note-block note-block-reply note-block-reply-latest'
+                            : 'note-block note-block-reply note-block-reply-obsolete';
+    const { contextLines, answerLines } = splitReplyBody(block.bodyLines);
+    const contextNodes = [];
+    if (contextLines.length) {
+      const grouped = [];
+      let curLabel = null;
+      let curBuf = [];
+      for (const ln of contextLines) {
+        const sp = splitContextLine(ln);
+        if (sp.label) {
+          if (curBuf.length || curLabel) grouped.push({ label: curLabel, text: curBuf.join('\n') });
+          curLabel = sp.label;
+          curBuf = [sp.text];
+        } else {
+          curBuf.push(ln);
+        }
+      }
+      if (curBuf.length || curLabel) grouped.push({ label: curLabel, text: curBuf.join('\n') });
+      for (const g of grouped) {
+        contextNodes.push(el('div', { className: 'note-reply-context-item' },
+          g.label ? el('div', { className: 'note-reply-sublabel' }, g.label) : null,
+          el('div', { className: 'note-reply-sub-body' }, ...linkifyText(g.text)),
+        ));
+      }
+    }
+    return el('div', { className: cls },
+      el('div', { className: 'note-block-header' },
+        el('span', { className: 'note-block-chip ' + (meta.latest ? 'note-chip-latest' : 'note-chip-obsolete') },
+          meta.latest ? '💬 最新回复' : '🗂 历史回复'),
+        meta.user ? el('span', { className: 'note-block-user' }, meta.user) : null,
+        el('span', { className: 'note-block-when' }, meta.when || ''),
+      ),
+      contextNodes.length ? el('div', { className: 'note-reply-context' },
+        el('div', { className: 'note-reply-sublabel-main' }, 'AI 此前提出'),
+        ...contextNodes,
+      ) : null,
+      el('div', { className: 'note-reply-answer' },
+        el('div', { className: 'note-reply-sublabel-main' }, (meta.user ? meta.user : '用户') + ' 的答复'),
+        el('div', { className: 'note-reply-sub-body' }, ...linkifyText(answerLines.join('\n'))),
+      ),
+    );
+  }
+
+  // legacy / freeform
+  return el('div', { className: 'note-block note-block-other' },
+    block.header ? el('div', { className: 'note-block-header' },
+      el('span', { className: 'note-block-chip note-chip-other' }, block.header),
+    ) : null,
+    el('div', { className: 'note-block-body' }, ...linkifyText(bodyText)),
+  );
+}
+
+function renderNoteBlocks(note) {
+  const blocks = parseNoteBlocks(note);
+  if (!blocks.length) return el('div', { className: 'detail-section-body' }, ...linkifyText(note || ''));
+  return el('div', { className: 'note-blocks' }, ...blocks.map(renderNoteBlock));
+}
 
 function renderCardDetailModal() {
   const ex = document.getElementById('card-detail-modal');
@@ -240,6 +553,9 @@ function renderCardDetailModal() {
       `创建 ${formatTime(t.ctime)}${t.ftime ? ` · 完成 ${formatTime(t.ftime)}` : ''}`,
     ),
   ));
+
+  // 子任务清单 —— done 状态只读,其它状态可编辑。
+  sections.push(buildChecklistSection(t, group));
 
   // 描述
   sections.push(el('div', { className: 'detail-section' },
@@ -265,7 +581,7 @@ function renderCardDetailModal() {
   if (t.note && String(t.note).trim()) {
     sections.push(el('div', { className: 'detail-section' },
       el('div', { className: 'detail-section-title' }, 'Note / 历史'),
-      el('div', { className: 'detail-section-body note-pre' }, ...linkifyText(t.note)),
+      renderNoteBlocks(t.note),
     ));
   }
 
@@ -309,7 +625,8 @@ function renderCardDetailModal() {
       },
     }, '💬 回复'));
   }
-  actions.push(el('button', { className: 'btn', onclick: closeCardDetailModal }, '关闭 (ESC)'));
+  actions.push(el('button', { className: 'btn', onclick: closeCardDetailModal },
+    getCardDetailSiblings().length > 1 ? '关闭 (ESC) · ← → 切换' : '关闭 (ESC)'));
 
   const modal = el('div', {
     id: 'card-detail-modal',
@@ -440,6 +757,26 @@ function renderCard(t, group) {
     ),
     el('div', { className: 'card-chips' }, ...chips),
   ];
+
+  // 紧凑 checklist 摘要 —— 只在有子项时渲染:迷你进度条 + 下一步未勾文本。
+  // 详情(可编辑)走 detail modal,卡片上不可点击交互,避免误触。
+  const checklistItems = parseChecklistVal(t.checklist);
+  if (checklistItems.length > 0) {
+    const s = checklistSummary(checklistItems);
+    const pct = Math.round(s.ratio * 100);
+    children.push(el('div', { className: 'card-progress' },
+      el('div', { className: 'card-progress-bar' },
+        el('div', { className: 'card-progress-fill', style: `width: ${pct}%` }),
+      ),
+      el('div', { className: 'card-progress-meta' }, `${s.done}/${s.total}`),
+    ));
+    if (s.nextUndone) {
+      children.push(el('div', { className: 'card-next-step', title: '下一步' },
+        el('span', { className: 'card-next-step-icon' }, '☐'),
+        el('span', { className: 'card-next-step-text' }, s.nextUndone),
+      ));
+    }
+  }
 
   if (extra) {
     children.push(el('div', { className: 'card-extra' }, ...linkifyText(extra)));
@@ -572,7 +909,14 @@ function renderDoneStrip(items) {
       onclick: () => { state.doneCollapsed = !state.doneCollapsed; renderDetail(); },
     },
       el('span', null, `今日完成 (${items.length})`),
-      el('span', null, collapsed ? '▸ 展开' : '▾ 折叠'),
+      el('span', { className: 'done-header-right' },
+        el('a', {
+          className: 'done-history-link',
+          href: '#',
+          onclick: e => { e.preventDefault(); e.stopPropagation(); openHistoryModal(); },
+        }, '查看历史'),
+        el('span', null, collapsed ? '▸ 展开' : '▾ 折叠'),
+      ),
     ),
     el('div', { className: 'done-body' },
       ...items.map(t => renderCard(t, 'done')),
@@ -589,14 +933,18 @@ function renderDetail() {
   const { project: p, tasks } = state.detail;
 
   // 在 c.innerHTML='' 之前快照所有需要保留滚动位置的容器,渲染完再写回 —— 否则 5s 轮询
-  // 每次重建 DOM 都把 done-body / column .col-body 的 scrollTop 重置成 0,用户滚到一半就
-  // 被甩回顶部。selector → scrollTop 的 map,key 只取第一个匹配(目前每种容器都只有一个)。
-  const scrollSelectors = ['.done-body', '.kanban-section .column .col-body'];
-  const savedScroll = {};
-  for (const sel of scrollSelectors) {
-    const node = c.querySelector(sel);
-    if (node) savedScroll[sel] = node.scrollTop;
-  }
+  // 每次重建 DOM 都把 done-body / column-body / kanban 的 scroll 位置重置成 0,
+  // 用户滚到一半就被甩回原点。
+  // 单实例容器按 selector 直接存;多实例容器(column-body 有 4 个)按出现顺序索引存。
+  const savedScrollTop = {};
+  const savedScrollLeft = {};
+  const doneBody = c.querySelector('.done-body');
+  if (doneBody) savedScrollTop['.done-body'] = doneBody.scrollTop;
+  const kanban = c.querySelector('.kanban');
+  if (kanban) savedScrollLeft['.kanban'] = kanban.scrollLeft;
+  const colBodies = c.querySelectorAll('.column-body');
+  const savedColumnScrolls = [];
+  colBodies.forEach(node => savedColumnScrolls.push(node.scrollTop));
 
   c.innerHTML = '';
 
@@ -673,10 +1021,18 @@ function renderDetail() {
 
   c.appendChild(renderDoneStrip(tasks.done_today));
 
-  for (const [sel, top] of Object.entries(savedScroll)) {
+  for (const [sel, top] of Object.entries(savedScrollTop)) {
     const node = c.querySelector(sel);
     if (node) node.scrollTop = top;
   }
+  for (const [sel, left] of Object.entries(savedScrollLeft)) {
+    const node = c.querySelector(sel);
+    if (node) node.scrollLeft = left;
+  }
+  const newColBodies = c.querySelectorAll('.column-body');
+  newColBodies.forEach((node, i) => {
+    if (savedColumnScrolls[i] != null) node.scrollTop = savedColumnScrolls[i];
+  });
 
   // 这三个 modal 由 state 驱动(open/close/paste 时显式调 render),
   // 不在 renderDetail 里调用,以免每 5s 轮询触发 modal DOM 重建 ——
@@ -712,6 +1068,41 @@ function parseTagString(raw) {
   if (raw == null || raw === '') return [];
   if (Array.isArray(raw)) return raw.map(s => String(s).trim()).filter(Boolean);
   return String(raw).split('|').map(s => s.trim()).filter(Boolean);
+}
+
+/**
+ * 把 row.checklist(JSON 字符串 / 数组 / null) 解析为 [{text, done}, ...]。
+ * 与 lib/checklist.cjs 的 parseChecklist 行为对齐;前端独立实现以免双 import。
+ * @param {unknown} raw
+ * @returns {{text:string,done:boolean}[]}
+ */
+function parseChecklistVal(raw) {
+  if (raw == null || raw === '') return [];
+  let arr;
+  if (Array.isArray(raw)) {
+    arr = raw;
+  } else {
+    try { arr = JSON.parse(String(raw)); } catch (_) { return []; }
+    if (!Array.isArray(arr)) return [];
+  }
+  return arr.map(it => {
+    if (typeof it === 'string') return { text: it, done: false };
+    if (it && typeof it === 'object') {
+      return { text: String(it.text ?? '').trim(), done: Boolean(it.done) };
+    }
+    return null;
+  }).filter(it => it && it.text);
+}
+
+/**
+ * 汇总 checklist 进度。
+ * @param {{text:string,done:boolean}[]} items
+ */
+function checklistSummary(items) {
+  const total = items.length;
+  const done = items.filter(it => it.done).length;
+  const next = items.find(it => !it.done);
+  return { done, total, ratio: total === 0 ? 0 : done / total, nextUndone: next ? next.text : null };
 }
 
 /**
@@ -937,7 +1328,7 @@ function renderAddModal() {
   descInput.addEventListener('paste', e => handleModalPaste(e, form, noteInput, attachContainer, errorBox));
 
   const modal = el('div', { id: 'add-modal', className: 'modal-backdrop', onclick: e => {
-    if (e.target.id === 'add-modal') closeAddModal();
+    if (e.target.id === 'add-modal') tryCloseAddModal();
   } },
     el('div', { className: 'modal' },
       el('div', { className: 'modal-title' }, '新增任务'),
@@ -961,6 +1352,8 @@ function renderAddModal() {
   descInput.focus();
 }
 
+let _addModalEscHandler = null;
+
 function openAddModal() {
   const scopes = (state.detail && state.detail.scopes) || [];
   state.addModal = {
@@ -972,13 +1365,38 @@ function openAddModal() {
     model: '',
     attachments: [],
   };
+  _addModalEscHandler = e => { if (e.key === 'Escape') tryCloseAddModal(); };
+  document.addEventListener('keydown', _addModalEscHandler);
   renderAddModal();
 }
 
 function closeAddModal() {
+  if (_addModalEscHandler) {
+    document.removeEventListener('keydown', _addModalEscHandler);
+    _addModalEscHandler = null;
+  }
   state.addModal = null;
   renderAddModal();
 }
+
+function isAddModalDirty() {
+  const f = state.addModal;
+  if (!f) return false;
+  return !!(
+    (f.desc || '').trim() ||
+    (f.note || '').trim() ||
+    (Array.isArray(f.tags) && f.tags.length) ||
+    (Array.isArray(f.attachments) && f.attachments.length)
+  );
+}
+
+function tryCloseAddModal() {
+  if (!state.addModal) return;
+  if (isAddModalDirty() && !confirm('表单已有内容,确认关闭?未提交内容会丢失')) return;
+  closeAddModal();
+}
+
+
 
 /** 支持上传的图片 MIME（与后端 ALLOWED_IMAGE_TYPES 保持一致） */
 const ALLOWED_PASTE_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
@@ -1097,6 +1515,91 @@ async function handleModalPaste(e, form, noteInput, attachContainer, statusBox) 
   showModalStatus(statusBox, `已附加: ${newPath}`, 'ok');
 }
 
+/**
+ * 处理 reply modal 中 textarea 的 paste 事件:
+ * - 剪贴板含图片 → 拦截默认 paste,上传到 .tasks/attachments/,
+ *   返回路径以新行形式插入到 textarea 光标位置(同时同步到 state.replyModal.reply)
+ * - 仅文本 → 不拦截,走默认 paste
+ *
+ * 相比 handleModalPaste 简化:reply 没有 attachments 缩略图侧栏,
+ * 路径直接写进文本即可,后端 reply 拼到 note 顶部,linkify 会自动渲染缩略图。
+ *
+ * @param {ClipboardEvent} e
+ * @param {HTMLTextAreaElement} textarea reply 输入 DOM
+ * @param {HTMLElement} statusBox modal 底部错误/状态盒子
+ */
+async function handleReplyPaste(e, textarea, statusBox) {
+  const items = e.clipboardData && e.clipboardData.items;
+  if (!items) return;
+  let imgItem = null;
+  for (const it of items) {
+    if (it.kind === 'file' && it.type && it.type.startsWith('image/')) {
+      imgItem = it;
+      break;
+    }
+  }
+  if (!imgItem) return;
+
+  e.preventDefault();
+  const blob = imgItem.getAsFile();
+  if (!blob) return;
+
+  const type = (blob.type || '').toLowerCase();
+  if (!ALLOWED_PASTE_TYPES.includes(type)) {
+    showModalStatus(statusBox, `不支持的图片类型: ${type || '(空)'}`, 'err');
+    return;
+  }
+  if (blob.size > MAX_PASTE_BYTES) {
+    showModalStatus(statusBox, `图片过大（${(blob.size / 1024 / 1024).toFixed(1)}MB,上限 5MB）`, 'err');
+    return;
+  }
+
+  showModalStatus(statusBox, '正在上传图片…', 'info');
+
+  let dataBase64;
+  try {
+    dataBase64 = await blobToBase64(blob);
+  } catch (err) {
+    showModalStatus(statusBox, `读取图片失败: ${err.message}`, 'err');
+    return;
+  }
+
+  const r = await postAction(`/api/projects/${state.selectedSlug}/upload-image`, {
+    contentType: type,
+    dataBase64,
+  });
+
+  if (!r.ok) {
+    showModalStatus(statusBox, (r.body && r.body.error) || `上传失败 (${r.status})`, 'err');
+    return;
+  }
+
+  const newPath = r.body && r.body.path;
+  if (!newPath) {
+    showModalStatus(statusBox, '上传成功但未返回路径', 'err');
+    return;
+  }
+
+  // 把路径插入到光标位置(用 \n 包夹保证独占一行,linkify 才会识别)
+  const m = state.replyModal;
+  const cur = textarea.value || '';
+  const selStart = typeof textarea.selectionStart === 'number' ? textarea.selectionStart : cur.length;
+  const selEnd = typeof textarea.selectionEnd === 'number' ? textarea.selectionEnd : cur.length;
+  const before = cur.slice(0, selStart);
+  const after = cur.slice(selEnd);
+  const needLeadingNL = before && !before.endsWith('\n') ? '\n' : '';
+  const needTrailingNL = after && !after.startsWith('\n') ? '\n' : '';
+  const inserted = `${needLeadingNL}${newPath}${needTrailingNL}`;
+  const next = before + inserted + after;
+  textarea.value = next;
+  if (m) m.reply = next;
+  // 还原光标到插入末尾
+  const caret = (before + inserted).length;
+  try { textarea.setSelectionRange(caret, caret); } catch (_) { /* noop */ }
+
+  showModalStatus(statusBox, `已附加: ${newPath}`, 'ok');
+}
+
 async function submitAddRow() {
   const form = state.addModal;
   if (!form) return;
@@ -1194,6 +1697,108 @@ function renderLoopCmdModal() {
           disabled: m.loading || !m.command,
           onclick: copyLoopCommand,
         }, m.copied ? '✓ 已复制' : '复制'),
+      ),
+    ),
+  );
+  document.body.appendChild(modal);
+}
+
+async function openHistoryModal(days) {
+  const d = Number(days) || 30;
+  state.historyModal = { loading: true, days: d, items: [], total: 0, error: '' };
+  renderHistoryModal();
+  try {
+    const r = await fetch(`/api/projects/${state.selectedSlug}/history?days=${d}`);
+    const body = await r.json().catch(() => ({}));
+    if (r.ok) {
+      state.historyModal = {
+        loading: false,
+        days: body.days || d,
+        items: Array.isArray(body.items) ? body.items : [],
+        total: body.total || 0,
+        error: '',
+      };
+    } else {
+      state.historyModal = { loading: false, days: d, items: [], total: 0, error: body.error || `失败 (${r.status})` };
+    }
+  } catch (err) {
+    state.historyModal = { loading: false, days: d, items: [], total: 0, error: String(err.message) };
+  }
+  renderHistoryModal();
+}
+
+function closeHistoryModal() {
+  state.historyModal = null;
+  renderHistoryModal();
+}
+
+function renderHistoryModal() {
+  const existing = document.getElementById('history-modal');
+  if (existing) existing.remove();
+  if (!state.historyModal) return;
+
+  const m = state.historyModal;
+
+  // 按日期(本地 YYYY-MM-DD)分组
+  const groups = new Map();
+  for (const t of m.items) {
+    let key = '—';
+    if (t.ftime) {
+      const d = new Date(t.ftime);
+      if (!Number.isNaN(d.getTime())) {
+        const y = d.getFullYear();
+        const mo = String(d.getMonth() + 1).padStart(2, '0');
+        const da = String(d.getDate()).padStart(2, '0');
+        key = `${y}-${mo}-${da}`;
+      }
+    }
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(t);
+  }
+  const groupKeys = Array.from(groups.keys()).sort((a, b) => b.localeCompare(a));
+
+  const dayOptions = [7, 30, 90, 365];
+  const filterRow = el('div', { className: 'history-filter' },
+    el('span', null, '范围：'),
+    ...dayOptions.map(n => el('button', {
+      className: 'btn' + (m.days === n ? ' primary' : ''),
+      disabled: m.loading,
+      onclick: () => openHistoryModal(n),
+    }, n >= 365 ? '一年' : `${n} 天`)),
+    el('span', { className: 'history-meta' },
+      m.loading ? '加载中…' : `共 ${m.total} 条${m.total > m.items.length ? `(显示前 ${m.items.length})` : ''}`,
+    ),
+  );
+
+  const body = el('div', { className: 'history-body' });
+  if (m.loading) {
+    body.appendChild(el('div', { className: 'history-empty' }, '加载中…'));
+  } else if (m.error) {
+    body.appendChild(el('div', { className: 'modal-error' }, m.error));
+  } else if (m.items.length === 0) {
+    body.appendChild(el('div', { className: 'history-empty' }, `过去 ${m.days} 天暂无已完成任务`));
+  } else {
+    for (const key of groupKeys) {
+      const list = groups.get(key);
+      body.appendChild(el('div', { className: 'history-day-header' },
+        el('span', null, key),
+        el('span', { className: 'history-day-count' }, `${list.length} 条`),
+      ));
+      for (const t of list) body.appendChild(renderCard(t, 'done'));
+    }
+  }
+
+  const modal = el('div', {
+    id: 'history-modal',
+    className: 'modal-backdrop',
+    onclick: e => { if (e.target.id === 'history-modal') closeHistoryModal(); },
+  },
+    el('div', { className: 'modal modal-wide' },
+      el('div', { className: 'modal-title' }, '历史已完成任务'),
+      filterRow,
+      body,
+      el('div', { className: 'modal-actions' },
+        el('button', { className: 'btn', onclick: closeHistoryModal }, '关闭'),
       ),
     ),
   );
@@ -1334,6 +1939,10 @@ function renderReplyModal() {
 
   const errorBox = el('div', { className: 'modal-error' }, m.error || '');
 
+  // reply textarea 绑 paste handler:剪贴板含图片 → 上传到 .tasks/attachments/,
+  // 路径插到光标位置,linkify 会把路径渲染成缩略图。
+  replyInput.addEventListener('paste', e => handleReplyPaste(e, replyInput, errorBox));
+
   const modal = el('div', {
     id: 'reply-modal',
     className: 'modal-backdrop',
@@ -1436,6 +2045,36 @@ async function changeTaskModel(id, model) {
   );
   if (!r.ok) alert(`切换任务 #${id} 模型失败: ${r.body?.error || r.status}`);
   await refreshProjects();
+}
+
+/**
+ * 提交整个 checklist(全量替换),成功后刷新并重渲染 detail modal。
+ * @param {number|string} id 任务 id
+ * @param {{text:string,done:boolean}[]} items 新数组
+ */
+async function submitChecklistUpdate(id, items) {
+  const r = await postAction(
+    `/api/projects/${state.selectedSlug}/tasks/${encodeURIComponent(id)}/checklist`,
+    { items },
+  );
+  if (!r.ok) {
+    alert(`保存清单失败: ${r.body?.error || r.status}`);
+    return;
+  }
+  // 同步刷新本地 task 引用,避免 modal 关闭前看到旧数据。
+  if (state.cardDetailModal && String(state.cardDetailModal.task.id) === String(id)) {
+    state.cardDetailModal.task.checklist = JSON.stringify(r.body.items || []);
+  }
+  await refreshProjects();
+  // 项目刷新后 state.detail.tasks 已更新,从中找到本任务最新引用,确保下次重渲染数据一致。
+  if (state.cardDetailModal) {
+    const groups = state.detail?.tasks || {};
+    for (const k of Object.keys(groups)) {
+      const found = (groups[k] || []).find(x => String(x.id) === String(id));
+      if (found) { state.cardDetailModal.task = found; break; }
+    }
+    renderCardDetailModal();
+  }
 }
 
 async function cleanupMissing(count) {
