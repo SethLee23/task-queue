@@ -84,7 +84,7 @@ function buildDefaultModule(candidateModules) {
  * 1. 创建 .tasks/ 和 .tasks/logs/ 目录
  * 2. 渲染 project.config.js 模板并写入
  * 3. 创建空白 tasks.xlsx（若不存在）
- * 4. 追加 .gitignore 条目（幂等，不重复追加）
+ * 4. 追加 .gitignore 条目（幂等，不重复追加）—— 整个 .tasks/ 都不进 git
  * 5. 落盘成功后 best-effort 注册到全局 registry（失败不阻断 init）
  *
  * 输出 JSON 到 stdout：{ created, gitignoreAppended, registered }
@@ -108,6 +108,7 @@ module.exports = async function initWrite(projectRoot, args) {
   const tasksDir = path.join(projectRoot, '.tasks');
   if (!fs.existsSync(tasksDir)) fs.mkdirSync(tasksDir, { recursive: true });
   fs.mkdirSync(path.join(tasksDir, 'logs'), { recursive: true });
+  fs.mkdirSync(path.join(tasksDir, 'run'), { recursive: true });
 
   // 构造 scopes / buildCommands / versionFiles / changelogFiles
   /** @type {Record<string, { dir: string, autoCommit: boolean }>} */
@@ -151,14 +152,10 @@ module.exports = async function initWrite(projectRoot, args) {
     await createBlankWorkbook(xlsxPath);
   }
 
-  // 追加 .gitignore 条目（幂等）
+  // 追加 .gitignore 条目（幂等）—— 整个 .tasks/ 都不进 git
   const gitignorePath = path.join(projectRoot, '.gitignore');
   const gitignoreEntries = [
-    '.tasks/tasks.xlsx',
-    '.tasks/tasks.xlsx.bak',
-    '.tasks/logs/',
-    '.tasks/attachments/',
-    '.tasks/*.bak',
+    '.tasks/',
   ];
   let gitignoreContent = fs.existsSync(gitignorePath)
     ? fs.readFileSync(gitignorePath, 'utf8')

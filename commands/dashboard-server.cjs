@@ -311,6 +311,8 @@ function ensureAttachmentsGitignored(projectRoot) {
   let content = '';
   try { content = fs.readFileSync(gitignorePath, 'utf8'); } catch (_) { /* 不存在 → 创建 */ }
   const lines = new Set(content.split('\n').map(l => l.trim()));
+  // 整目录已被 ignore（init-write 默认行为）→ 不需要再追加
+  if (lines.has('.tasks/') || lines.has('.tasks')) return;
   if (lines.has(wanted)) return;
   if (content.length > 0 && !content.endsWith('\n')) content += '\n';
   content += wanted + '\n';

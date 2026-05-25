@@ -119,13 +119,10 @@ test('正常 init-write：创建目录/文件/gitignore 条目正确', async () 
   const logsDir = path.join(proj, '.tasks', 'logs');
   assert.ok(fs.existsSync(logsDir) && fs.statSync(logsDir).isDirectory(), 'logs/ 目录应存在');
 
-  // .gitignore 包含 4 条目
+  // .gitignore 包含 .tasks/ 条目（整目录 ignore）
   const gitignoreContent = fs.readFileSync(path.join(proj, '.gitignore'), 'utf8');
   const lines = gitignoreContent.split('\n').map(l => l.trim());
-  assert.ok(lines.includes('.tasks/tasks.xlsx'), '.gitignore 应含 .tasks/tasks.xlsx');
-  assert.ok(lines.includes('.tasks/tasks.xlsx.bak'), '.gitignore 应含 .tasks/tasks.xlsx.bak');
-  assert.ok(lines.includes('.tasks/logs/'), '.gitignore 应含 .tasks/logs/');
-  assert.ok(lines.includes('.tasks/*.bak'), '.gitignore 应含 .tasks/*.bak');
+  assert.ok(lines.includes('.tasks/'), '.gitignore 应含 .tasks/');
 });
 
 test('重复调用幂等：第二次 gitignoreAppended 为 false', async () => {
@@ -148,10 +145,10 @@ test('重复调用幂等：第二次 gitignoreAppended 为 false', async () => {
   const gitignoreAfterSecond = fs.readFileSync(path.join(proj, '.gitignore'), 'utf8');
   assert.equal(gitignoreAfterFirst, gitignoreAfterSecond, '.gitignore 内容不应重复追加');
 
-  // 4 条目没有重复出现
+  // .tasks/ 条目没有重复出现
   const lines = gitignoreAfterSecond.split('\n').map(l => l.trim()).filter(Boolean);
-  const countTasksXlsx = lines.filter(l => l === '.tasks/tasks.xlsx').length;
-  assert.equal(countTasksXlsx, 1, '.tasks/tasks.xlsx 不应重复');
+  const countTasks = lines.filter(l => l === '.tasks/').length;
+  assert.equal(countTasks, 1, '.tasks/ 不应重复');
 });
 
 test('inferModule 正确性：web/src/view/Router/ 命中 "路由管理"', async () => {

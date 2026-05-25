@@ -61,23 +61,23 @@ node ~/.claude/skills/task-queue/tasks.cjs detect <project-root>
 node ~/.claude/skills/task-queue/tasks.cjs init-write <project-root> '<answers-json>'
 ```
 
-### Step 4: 提交配置入 git（关键）
+### Step 4: 提交 .gitignore 入 git（关键）
 
-为避免首次 `done` 把 `.tasks/` 整个目录一起 commit（`.gitignore` 在 init 期间是 untracked，`git add` 时会被一并加入），init-write 一旦成功，立刻显式提交 `.gitignore` 和 `.tasks/project.config.js`：
+`.tasks/` 整个目录都不进 git（任务表、配置、日志、附件全部属于本地工作区状态）。init-write 已在 `.gitignore` 追加 `.tasks/`，紧接着只提交 `.gitignore` 这一个文件：
 
 ```bash
 cd <project-root>
-git add .gitignore .tasks/project.config.js
-git commit -m "task-queue: 接入任务队列配置"
+git add .gitignore
+git commit -m "task-queue: 接入任务队列（ignore .tasks/）"
 ```
 
-注意：**必须显式列文件**，禁止 `git add -A` / `git add .` —— 用户工作区可能有 in-progress 改动，不能误带入。
+注意：**必须显式列文件**，禁止 `git add -A` / `git add .` —— 用户工作区可能有 in-progress 改动，不能误带入；尤其不能把 `.tasks/` 任何内容 add 进来。
 
 ### Step 5: 收尾
 
 告诉用户 init 完成，提醒：
 - 任务表在 `<root>/.tasks/tasks.xlsx`
-- 配置在 `<root>/.tasks/project.config.js`（已 git ignore 任务表和日志）
+- 配置在 `<root>/.tasks/project.config.js`（整个 `.tasks/` 已 git ignore，本机持久，不进仓库）
 - 启动 loop：让我用 `/task-queue start`
 
 ## §start 流程
