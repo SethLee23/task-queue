@@ -10,6 +10,7 @@ const state = {
   addModal: null,
   loopCmdModal: null,
   replyModal: null,
+  reopenModal: null,
   markDoneModal: null,
   imagePreview: null,
   cardDetailModal: null,
@@ -834,6 +835,15 @@ function renderCard(t, group) {
           renderDetail();
         },
       }, showCollapsed ? '▾ 展开' : '▴ 收起'),
+    ));
+  }
+
+  if (group === 'done') {
+    children.push(el('div', { className: 'card-actions' },
+      el('button', {
+        className: 'btn primary',
+        onclick: (e) => { e.stopPropagation(); openReopenModal(t); },
+      }, '回复重开'),
     ));
   }
 
@@ -2008,6 +2018,76 @@ function renderReplyModal() {
           disabled: m.submitting,
           onclick: submitReply,
         }, m.submitting ? '提交中…' : '仅提交'),
+      ),
+    ),
+  );
+  document.body.appendChild(modal);
+  replyInput.focus();
+}
+
+function openReopenModal(task) {
+  state.reopenModal = {
+    id: task.id,
+    desc: task.desc || '',
+    note: task.note || '',
+    reply: '',
+    error: '',
+    submitting: false,
+  };
+  renderReopenModal();
+}
+
+function closeReopenModal() {
+  state.reopenModal = null;
+  renderReopenModal();
+}
+
+async function submitReopen() {
+  const m = state.reopenModal;
+  if (!m || m.submitting) return;
+  if (!m.reply.trim()) { m.error = '回复内容不能为空'; renderReopenModal(); return; }
+  m.submitting = true; m.error = ''; renderReopenModal();
+
+  const r = await postAction(`/api/projects/${state.selectedSlug}/reopen`, {
+    id: m.id, reply: m.reply.trim(),
+  });
+  if (r.ok) {
+    closeReopenModal();
+    if (state.historyModal) await openHistoryModal(state.historyModal.days);
+    await refreshProjects();
+  } else {
+    m.submitting = false;
+    m.error = r.body?.error || `失败 (${r.status})`;
+    renderReopenModal();
+  }
+}
+
+function renderReopenModal() {
+  const existing = document.getElementById('reopen-modal');
+  if (existing) existing.remove();
+  if (!state.reopenModal) return;
+  const m = state.reopenModal;
+
+  const replyInput = el('textarea', {
+    className: 'modal-input', rows: 5,
+    placeholder: '回复内容（提交后任务带着完整历史重新进入待办，交给 loop 重做）',
+    autocomplete: 'off', autocorrect: 'off', autocapitalize: 'off', spellcheck: 'false',
+  });
+  replyInput.value = m.reply || '';
+  bindImeSafeInput(replyInput, v => { m.reply = v; });
+
+  const modal = el('div', {
+    id: 'reopen-modal', className: 'modal-backdrop',
+    onclick: e => { if (e.target.id === 'reopen-modal') closeReopenModal(); },
+  },
+    el('div', { className: 'modal' },
+      el('div', { className: 'modal-title' }, `回复重开 #${m.id} ${m.desc.slice(0, 40)}${m.desc.length > 40 ? '…' : ''}`),
+      el('label', { className: 'modal-label' }, '回复内容', replyInput),
+      m.error ? el('div', { className: 'modal-error' }, m.error) : null,
+      el('div', { className: 'modal-actions' },
+        el('button', { className: 'btn', onclick: closeReopenModal }, '取消'),
+        el('button', { className: 'btn primary', disabled: m.submitting, onclick: submitReopen },
+          m.submitting ? '提交中…' : '重开为待办'),
       ),
     ),
   );
