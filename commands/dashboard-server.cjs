@@ -27,6 +27,7 @@ const { replyCore } = require('./reply.cjs');
 const { markDoneCore } = require('./mark-done.cjs');
 const { setTaskModelCore } = require('./set-task-model.cjs');
 const { resolveTarget, buildOpenCommand } = require('../lib/open-target.cjs');
+const { sessionName: lcSessionName, renderStartScript } = require('../lib/launch-command.cjs');
 
 const WEB_ROOT = path.join(__dirname, '..', 'web');
 
@@ -259,7 +260,7 @@ async function handleWakeNow(req, res, rawSlug) {
  * @returns {string}
  */
 function scanSessionName(slug) {
-  return `task-queue-loop-${slug}`;
+  return lcSessionName(slug);
 }
 
 /**
@@ -496,13 +497,8 @@ async function handleOpen(req, res) {
   }
 }
 
-function shellSingleQuote(s) {
-  return "'" + String(s).replace(/'/g, "'\\''") + "'";
-}
-
 /**
  * 处理 GET /api/projects/:slug/loop-command
- * 读 loop-prompt.md，替换 ${PROJECT_ROOT}，输出 tmux 三段启动脚本：
  *   1) 把 prompt 写进 $TMPDIR/tq-loop-<slug>.prompt （heredoc 引号定界符,逐字落盘）
  *   2) `tmux new-session -ds "$SESSION" -c <root> "$SHELL"` 起常驻 session
  *   3) `tmux send-keys ... "claude … '/loop $(cat <prompt-file>)' …" Enter`
@@ -518,40 +514,13 @@ async function handleLoopCommand(res, rawSlug) {
   const entry = registryList().find(p => p.slug === slug);
   if (!entry) return sendJson(res, 404, { error: 'project not found' });
 
-  const promptPath = path.join(__dirname, '..', 'loop-prompt.md');
-  let prompt;
+  let command;
   try {
-    prompt = fs.readFileSync(promptPath, 'utf8');
+    command = renderStartScript(entry.root, slug);
   } catch (err) {
     return sendJson(res, 500, { error: `读取 loop-prompt.md 失败: ${err.message}` });
   }
-  prompt = prompt.replace(/\$\{PROJECT_ROOT\}/g, entry.root);
-  // 去掉末尾多余空行，heredoc 看起来干净
-  prompt = prompt.replace(/\s+$/, '');
-
-  const sessionName = scanSessionName(slug);
-  const rootQ = shellSingleQuote(entry.root);
-  // send-keys 这一行外层是 bash 双引号串，里面：
-  //   - \"   → 字面 "
-  //   - \$(  → 字面 $(  （让内层 shell 自己执行 $(cat …) ）
-  //   - $PROMPT_FILE 由外层 bash 展开成真路径
-  const sendKeysLine =
-    'tmux send-keys -t "$SESSION" ' +
-    '"claude --dangerously-skip-permissions \\"/loop \\$(cat \'$PROMPT_FILE\')\\"" ' +
-    'Enter';
-
-  const command = [
-    `SESSION='${sessionName}'`,
-    `PROMPT_FILE="\${TMPDIR:-/tmp}/tq-loop-${slug}.prompt"`,
-    `cat > "$PROMPT_FILE" <<'TQ_PROMPT_END'`,
-    prompt,
-    `TQ_PROMPT_END`,
-    `tmux new-session -ds "$SESSION" -c ${rootQ} "$SHELL"`,
-    sendKeysLine,
-    `tmux attach -t "$SESSION"`,
-  ].join('\n');
-
-  sendJson(res, 200, { command, projectRoot: entry.root, sessionName });
+  sendJson(res, 200, { command, projectRoot: entry.root, sessionName: scanSessionName(slug) });
 }
 
 /**
