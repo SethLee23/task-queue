@@ -24,6 +24,7 @@ const { localDateStr } = require('../lib/datetime.cjs');
 const { loadProjectConfig } = require('../lib/config.cjs');
 const { addRowCore } = require('./add-row.cjs');
 const { replyCore } = require('./reply.cjs');
+const { reopenCore } = require('./reopen.cjs');
 const { markDoneCore } = require('./mark-done.cjs');
 const { setTaskModelCore } = require('./set-task-model.cjs');
 const { resolveTarget, buildOpenCommand } = require('../lib/open-target.cjs');
@@ -557,6 +558,34 @@ async function handleReply(req, res, rawSlug) {
 }
 
 /**
+ * 处理 POST /api/projects/:slug/reopen
+ * body: { id, reply } 把已完成/跳过的归档任务追加回复并重开为 todo。
+ * @param {http.IncomingMessage} req
+ * @param {http.ServerResponse} res
+ * @param {string} rawSlug
+ */
+async function handleReopen(req, res, rawSlug) {
+  const slug = decodeURIComponent(rawSlug);
+  if (!SLUG_RE.test(slug)) return sendJson(res, 400, { error: 'invalid slug format' });
+
+  const entry = registryList().find(p => p.slug === slug);
+  if (!entry) return sendJson(res, 404, { error: 'project not found' });
+
+  const body = await readJsonBody(req).catch(() => null);
+  if (!body || body.id == null) return sendJson(res, 400, { error: 'id 必填' });
+  if (!body.reply || !String(body.reply).trim()) {
+    return sendJson(res, 400, { error: 'reply 内容不能为空' });
+  }
+
+  try {
+    const result = await reopenCore(entry.root, { id: body.id, reply: String(body.reply) });
+    sendJson(res, 200, { ok: true, task: result });
+  } catch (err) {
+    sendJson(res, 400, { error: String(err.message) });
+  }
+}
+
+/**
  * 处理 POST /api/projects/:slug/mark-done
  * body: { id, summary } 把 待review / 阻塞 任务手动标记为已完成并归档。
  * @param {http.IncomingMessage} req
@@ -735,12 +764,15 @@ async function handleGetHistory(req, res, rawSlug) {
   const cutoffMs = Date.now() - days * 86400000;
   const items = [];
   for (const row of archRows) {
-    if (row.status !== STATES.DONE || !row.ftime) continue;
-    const d = row.ftime instanceof Date ? row.ftime : new Date(/** @type {string} */ (row.ftime));
+    if (row.status !== STATES.DONE && row.status !== STATES.SKIPPED) continue;
+    const sortStamp = row.ftime || row.ctime;
+    if (!sortStamp) continue;
+    const d = sortStamp instanceof Date ? sortStamp : new Date(/** @type {string} */ (sortStamp));
     const t = d.getTime();
     if (!Number.isFinite(t) || t < cutoffMs) continue;
     const picked = pickFields(row, TASK_PICK_FIELDS);
     picked.ftime = d.toISOString();
+    picked.status = row.status;
     items.push(picked);
   }
   items.sort((a, b) => String(b.ftime || '').localeCompare(String(a.ftime || '')));
@@ -1139,6 +1171,12 @@ function handle(req, res) {
   const replyM = pathname.match(/^\/api\/projects\/([^/]+)\/reply$/);
   if (replyM && req.method === 'POST') {
     handleReply(req, res, replyM[1]).catch(err => sendJson(res, 500, { error: String(err.message) }));
+    return;
+  }
+
+  const reopenM = pathname.match(/^\/api\/projects\/([^/]+)\/reopen$/);
+  if (reopenM && req.method === 'POST') {
+    handleReopen(req, res, reopenM[1]).catch(err => sendJson(res, 500, { error: String(err.message) }));
     return;
   }
 
