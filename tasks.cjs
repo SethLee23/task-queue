@@ -21,7 +21,7 @@ const KNOWN_COMMANDS = [
   'dashboard', 'heartbeat', 'clear-wake', 'mark-done',
   'set-desired-model', 'set-task-model',
   'set-checklist', 'tick-checklist', 'untick-checklist', 'add-checklist', 'del-checklist',
-  'watchdog',
+  'watchdog', 'reopen',
 ];
 
 /** 不需要 <project-root> 参数的命令集合 */

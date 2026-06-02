@@ -138,3 +138,5 @@ async function replyCli(projectRoot, args) {
 
 module.exports = replyCli;
 module.exports.replyCore = replyCore;
+module.exports.demoteLatestTags = demoteLatestTags;
+module.exports.getReplierName = getReplierName;
