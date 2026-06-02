@@ -108,3 +108,22 @@ test('runPass：hidden 项目完全忽略', async () => {
   assert.equal(h.tmuxCalls.length, 0);
   assert.deepEqual(h.getState(), {});
 });
+
+test('renderPlist 含 Label / StartInterval 60 / RunAtLoad / PATH / ProgramArguments', () => {
+  const xml = wd.renderPlist({
+    nodePath: '/opt/homebrew/bin/node',
+    tasksCjs: '/Users/x/.claude/skills/task-queue/tasks.cjs',
+    pathEnv: '/opt/homebrew/bin:/usr/bin:/bin',
+    logPath: '/Users/x/.task-queue/watchdog.log',
+  });
+  assert.ok(xml.includes('<string>com.taskqueue.watchdog</string>'), '含 Label');
+  assert.ok(xml.includes('<key>StartInterval</key>'));
+  assert.ok(xml.includes('<integer>60</integer>'), 'StartInterval 60');
+  assert.ok(xml.includes('<key>RunAtLoad</key>'));
+  assert.ok(xml.includes('<true/>'));
+  assert.ok(xml.includes('<string>/opt/homebrew/bin/node</string>'));
+  assert.ok(xml.includes('<string>/Users/x/.claude/skills/task-queue/tasks.cjs</string>'));
+  assert.ok(xml.includes('<string>watchdog</string>'));
+  assert.ok(xml.includes('/opt/homebrew/bin:/usr/bin:/bin'), '含 PATH env');
+  assert.ok(xml.includes('<string>/Users/x/.task-queue/watchdog.log</string>'), '含日志路径');
+});

@@ -1,6 +1,9 @@
 'use strict';
 
 const { execFileSync: realExecFileSync } = require('node:child_process');
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
 const registry = require('../lib/registry.cjs');
 const { readHeartbeat } = require('../lib/heartbeat.cjs');
 const { readPaused } = require('../lib/paused.cjs');
@@ -94,4 +97,99 @@ async function runPass(deps) {
   }
 }
 
-module.exports = { decideProject, runPass, STALE_MS, GRACE_MS, MAX_RESTARTS, WATCHDOG_LABEL };
+/** which：返回绝对路径或 null。 */
+function which(bin, execFileSyncImpl = realExecFileSync) {
+  try {
+    return execFileSyncImpl('/usr/bin/which', [bin], { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim() || null;
+  } catch (_) { return null; }
+}
+
+/** 渲染 launchd plist XML。 */
+function renderPlist({ nodePath, tasksCjs, pathEnv, logPath }) {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${WATCHDOG_LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${nodePath}</string>
+    <string>${tasksCjs}</string>
+    <string>watchdog</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>${pathEnv}</string>
+  </dict>
+  <key>StartInterval</key>
+  <integer>60</integer>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>${logPath}</string>
+  <key>StandardErrorPath</key>
+  <string>${logPath}</string>
+</dict>
+</plist>
+`;
+}
+
+function plistPath() {
+  return path.join(os.homedir(), 'Library', 'LaunchAgents', `${WATCHDOG_LABEL}.plist`);
+}
+
+async function doInstall() {
+  const nodePath = process.execPath;
+  const tasksCjs = path.resolve(__dirname, '..', 'tasks.cjs');
+  const tmux = which('tmux');
+  const claude = which('claude');
+  if (!tmux) throw new Error('PATH 中找不到 tmux，请先安装（brew install tmux）');
+  if (!claude) throw new Error('PATH 中找不到 claude');
+  const dirs = [path.dirname(nodePath), path.dirname(tmux), path.dirname(claude), '/usr/bin', '/bin'];
+  const pathEnv = [...new Set(dirs)].join(':');
+  const logPath = path.join(os.homedir(), '.task-queue', 'watchdog.log');
+  fs.mkdirSync(path.dirname(logPath), { recursive: true });
+  const xml = renderPlist({ nodePath, tasksCjs, pathEnv, logPath });
+  const pl = plistPath();
+  fs.mkdirSync(path.dirname(pl), { recursive: true });
+  fs.writeFileSync(pl, xml);
+  try { realExecFileSync('launchctl', ['unload', pl], { stdio: 'ignore' }); } catch (_) {}
+  realExecFileSync('launchctl', ['load', '-w', pl], { stdio: 'inherit' });
+  process.stdout.write(JSON.stringify({ ok: true, action: 'install', plist: pl, pathEnv }) + '\n');
+}
+
+async function doUninstall() {
+  const pl = plistPath();
+  try { realExecFileSync('launchctl', ['unload', pl], { stdio: 'ignore' }); } catch (_) {}
+  try { fs.unlinkSync(pl); } catch (_) {}
+  process.stdout.write(JSON.stringify({ ok: true, action: 'uninstall', plist: pl }) + '\n');
+}
+
+async function doStatus() {
+  let loaded = false;
+  try { realExecFileSync('launchctl', ['list', WATCHDOG_LABEL], { stdio: 'ignore' }); loaded = true; } catch (_) {}
+  process.stdout.write(JSON.stringify({ ok: true, loaded, plist: plistPath(), state: readState() }, null, 2) + '\n');
+}
+
+/** dispatcher 入口：argv[3] 作为子动作（watchdog 不需 project-root）。 */
+async function handler(subAction) {
+  switch (subAction) {
+    case 'install': return doInstall();
+    case 'uninstall': return doUninstall();
+    case 'status': return doStatus();
+    case undefined:
+    case 'run': return runPass({});
+    default: throw new Error(`未知 watchdog 子动作: ${subAction}（可选: run/install/uninstall/status）`);
+  }
+}
+
+module.exports = handler;
+module.exports.decideProject = decideProject;
+module.exports.runPass = runPass;
+module.exports.renderPlist = renderPlist;
+module.exports.STALE_MS = STALE_MS;
+module.exports.GRACE_MS = GRACE_MS;
+module.exports.MAX_RESTARTS = MAX_RESTARTS;
+module.exports.WATCHDOG_LABEL = WATCHDOG_LABEL;

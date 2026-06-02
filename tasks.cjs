@@ -21,10 +21,11 @@ const KNOWN_COMMANDS = [
   'dashboard', 'heartbeat', 'clear-wake', 'mark-done',
   'set-desired-model', 'set-task-model',
   'set-checklist', 'tick-checklist', 'untick-checklist', 'add-checklist', 'del-checklist',
+  'watchdog',
 ];
 
 /** 不需要 <project-root> 参数的命令集合 */
-const COMMANDS_NOT_REQUIRING_PROJECT_ROOT = new Set(['detect', 'init-write', 'test-push', 'dashboard']);
+const COMMANDS_NOT_REQUIRING_PROJECT_ROOT = new Set(['detect', 'init-write', 'test-push', 'dashboard', 'watchdog']);
 
 async function main() {
   const [, , cmd, projectRoot, ...rest] = process.argv;
