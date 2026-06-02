@@ -37,16 +37,18 @@ module.exports = {
 
   /**
    * 根据 scope、模块、描述和版本号生成 commit message。
-   * @param {{ scope: string, module: string, desc: string, version: string }} params
+   * @param {{ id: number|string, scope: string, module: string, desc: string, summary: string, version: string }} params
    * @returns {string}
    */
-  commitMessage: ({ scope, module, desc, version }) => {
+  commitMessage: ({ id, scope, module, desc, summary, version }) => {
     const templates = __COMMIT_TEMPLATES__;
     const tpl = templates[scope];
     return tpl
+      .replace('{id}', id ?? '')
       .replace('{version}', version)
       .replace('{module}', module)
-      .replace('{desc}', desc);
+      .replace('{desc}', desc)
+      .replace('{summary}', summary ?? '');
   },
 
   autoPush: false,

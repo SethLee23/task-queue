@@ -4,7 +4,16 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const url = require('node:url');
-const { spawn } = require('node:child_process');
+const { spawn, execFileSync: realExecFileSync } = require('node:child_process');
+
+/**
+ * tmux 子进程调用钩子。测试用 __setExecFileSyncImpl 注入 mock，传 null 还原默认。
+ * 仅 handleScanNow 走这条路；其他业务逻辑继续直接用 child_process。
+ */
+let execFileSyncImpl = realExecFileSync;
+function __setExecFileSyncImpl(fn) {
+  execFileSyncImpl = fn || realExecFileSync;
+}
 const { list: registryList, remove: registryRemove, update: registryUpdate, VALID_MODELS } = require('../lib/registry.cjs');
 const { readRows, withWorkbook, SHEET_IN_PROGRESS, SHEET_ARCHIVED, colIndex } = require('../lib/workbook.cjs');
 const { STATES, PRIORITY_ORDER } = require('../lib/states.cjs');
@@ -15,6 +24,7 @@ const { localDateStr } = require('../lib/datetime.cjs');
 const { loadProjectConfig } = require('../lib/config.cjs');
 const { addRowCore } = require('./add-row.cjs');
 const { replyCore } = require('./reply.cjs');
+const { markDoneCore } = require('./mark-done.cjs');
 const { setTaskModelCore } = require('./set-task-model.cjs');
 const { resolveTarget, buildOpenCommand } = require('../lib/open-target.cjs');
 
@@ -96,7 +106,7 @@ function readJsonBodyCapped(req, maxBytes) {
  *
  * @param {{ root: string }} entry 项目注册信息
  * @param {number|string} taskId 任务 id
- * @param {string|null} expectedStatus null = 不校验状态
+ * @param {string|string[]|null} expectedStatus null = 不校验；string = 单状态；string[] = 任一状态
  * @param {(row: import('exceljs').Row) => void} mutateFn 修改行的函数
  * @returns {Promise<{ notFound?: true, conflict?: true }>} 空对象表示成功
  */
@@ -107,7 +117,10 @@ async function mutateTaskRow(entry, taskId, expectedStatus, mutateFn) {
   const rows = await readRows(xlsxPath, SHEET_IN_PROGRESS);
   const target = rows.find(r => String(r.id) === String(taskId));
   if (!target) return { notFound: true };
-  if (expectedStatus !== null && target.status !== expectedStatus) return { conflict: true };
+  if (expectedStatus !== null) {
+    const allowed = Array.isArray(expectedStatus) ? expectedStatus : [expectedStatus];
+    if (!allowed.includes(target.status)) return { conflict: true };
+  }
 
   await withWorkbook(xlsxPath, async wb => {
     const ws = wb.getWorksheet(SHEET_IN_PROGRESS);
@@ -120,7 +133,7 @@ async function mutateTaskRow(entry, taskId, expectedStatus, mutateFn) {
 
 /**
  * 处理 POST /api/projects/:slug/skip
- * body: { id }  待办 → 跳过；非待办 → 409；id 不存在 → 404
+ * body: { id }  待办 / 待 review / 阻塞 → 跳过；其余状态 → 409；id 不存在 → 404
  * @param {http.IncomingMessage} req
  * @param {http.ServerResponse} res
  * @param {string} rawSlug
@@ -136,12 +149,17 @@ async function handleSkip(req, res, rawSlug) {
   if (!body || body.id == null) return sendJson(res, 400, { error: 'id is required' });
   const taskId = body.id;
 
-  const result = await mutateTaskRow(entry, taskId, STATES.TODO, row => {
-    row.getCell(colIndex('status')).value = STATES.SKIPPED;
-  });
+  const result = await mutateTaskRow(
+    entry,
+    taskId,
+    [STATES.TODO, STATES.REVIEW, STATES.BLOCKED],
+    row => {
+      row.getCell(colIndex('status')).value = STATES.SKIPPED;
+    },
+  );
 
   if (result.notFound) return sendJson(res, 404, { error: 'task not found' });
-  if (result.conflict) return sendJson(res, 409, { error: 'task is not in TODO state' });
+  if (result.conflict) return sendJson(res, 409, { error: 'task not skippable (must be 待办 / 待 review / 阻塞)' });
   sendJson(res, 200, { ok: true });
 }
 
@@ -233,6 +251,42 @@ async function handleWakeNow(req, res, rawSlug) {
   const reason = (body && body.reason) ? String(body.reason) : '面板立即执行';
   setWakeNow(entry.root, reason);
   sendJson(res, 200, { ok: true });
+}
+
+/**
+ * 把 slug 翻成 tmux session 名。
+ * @param {string} slug
+ * @returns {string}
+ */
+function scanSessionName(slug) {
+  return `task-queue-loop-${slug}`;
+}
+
+/**
+ * 处理 POST /api/projects/:slug/scan-now
+ * 先 `tmux has-session -t <session>`，存在则 `tmux send-keys -t <session> 扫一下 Enter`
+ * 注入到 loop stdin（Claude 立即响应，绕开 ScheduleWakeup 倒计时）；
+ * tmux 不可用 / session 不存在则降级写 wake-now 旗子。
+ * @param {http.IncomingMessage} _req
+ * @param {http.ServerResponse} res
+ * @param {string} rawSlug
+ */
+async function handleScanNow(_req, res, rawSlug) {
+  const slug = decodeURIComponent(rawSlug);
+  if (!SLUG_RE.test(slug)) return sendJson(res, 400, { error: 'invalid slug format' });
+
+  const entry = registryList().find(p => p.slug === slug);
+  if (!entry) return sendJson(res, 404, { error: 'project not found' });
+
+  const sessionName = scanSessionName(slug);
+  try {
+    execFileSyncImpl('tmux', ['has-session', '-t', sessionName], { stdio: 'ignore' });
+    execFileSyncImpl('tmux', ['send-keys', '-t', sessionName, '扫一下', 'Enter'], { stdio: 'ignore' });
+    return sendJson(res, 200, { ok: true, mode: 'tmux', sessionName });
+  } catch (_err) {
+    setWakeNow(entry.root, '面板立即执行');
+    return sendJson(res, 200, { ok: true, mode: 'wake-flag', sessionName });
+  }
 }
 
 /**
@@ -442,20 +496,18 @@ async function handleOpen(req, res) {
   }
 }
 
-/**
- * 把任意字符串包成 POSIX shell 安全的单引号字面量。
- * 内部 ' 替换为 '\'' （结束 → 转义单引号 → 重新开始）。
- * @param {string} s
- * @returns {string}
- */
 function shellSingleQuote(s) {
   return "'" + String(s).replace(/'/g, "'\\''") + "'";
 }
 
 /**
  * 处理 GET /api/projects/:slug/loop-command
- * 读 loop-prompt.md，替换 ${PROJECT_ROOT}，拼成可粘贴到 terminal 的一条
- * `cd '<root>' && claude '/loop ...'` 命令，前端用来一键复制。
+ * 读 loop-prompt.md，替换 ${PROJECT_ROOT}，输出 tmux 三段启动脚本：
+ *   1) 把 prompt 写进 $TMPDIR/tq-loop-<slug>.prompt （heredoc 引号定界符,逐字落盘）
+ *   2) `tmux new-session -ds "$SESSION" -c <root> "$SHELL"` 起常驻 session
+ *   3) `tmux send-keys ... "claude … '/loop $(cat <prompt-file>)' …" Enter`
+ *   4) `tmux attach -t "$SESSION"` 让用户落到 loop 上
+ * 这样面板 ⚡ 按钮就能通过 send-keys 把 "扫一下" 直接注入 stdin。
  * @param {http.ServerResponse} res
  * @param {string} rawSlug
  */
@@ -474,12 +526,32 @@ async function handleLoopCommand(res, rawSlug) {
     return sendJson(res, 500, { error: `读取 loop-prompt.md 失败: ${err.message}` });
   }
   prompt = prompt.replace(/\$\{PROJECT_ROOT\}/g, entry.root);
+  // 去掉末尾多余空行，heredoc 看起来干净
+  prompt = prompt.replace(/\s+$/, '');
 
-  const command =
-    `cd ${shellSingleQuote(entry.root)} && ` +
-    `claude --dangerously-skip-permissions ${shellSingleQuote('/loop ' + prompt)}`;
+  const sessionName = scanSessionName(slug);
+  const rootQ = shellSingleQuote(entry.root);
+  // send-keys 这一行外层是 bash 双引号串，里面：
+  //   - \"   → 字面 "
+  //   - \$(  → 字面 $(  （让内层 shell 自己执行 $(cat …) ）
+  //   - $PROMPT_FILE 由外层 bash 展开成真路径
+  const sendKeysLine =
+    'tmux send-keys -t "$SESSION" ' +
+    '"claude --dangerously-skip-permissions \\"/loop \\$(cat \'$PROMPT_FILE\')\\"" ' +
+    'Enter';
 
-  sendJson(res, 200, { command, projectRoot: entry.root });
+  const command = [
+    `SESSION='${sessionName}'`,
+    `PROMPT_FILE="\${TMPDIR:-/tmp}/tq-loop-${slug}.prompt"`,
+    `cat > "$PROMPT_FILE" <<'TQ_PROMPT_END'`,
+    prompt,
+    `TQ_PROMPT_END`,
+    `tmux new-session -ds "$SESSION" -c ${rootQ} "$SHELL"`,
+    sendKeysLine,
+    `tmux attach -t "$SESSION"`,
+  ].join('\n');
+
+  sendJson(res, 200, { command, projectRoot: entry.root, sessionName });
 }
 
 /**
@@ -516,6 +588,37 @@ async function handleReply(req, res, rawSlug) {
 }
 
 /**
+ * 处理 POST /api/projects/:slug/mark-done
+ * body: { id, summary } 把 待review / 阻塞 任务手动标记为已完成并归档。
+ * @param {http.IncomingMessage} req
+ * @param {http.ServerResponse} res
+ * @param {string} rawSlug
+ */
+async function handleMarkDone(req, res, rawSlug) {
+  const slug = decodeURIComponent(rawSlug);
+  if (!SLUG_RE.test(slug)) return sendJson(res, 400, { error: 'invalid slug format' });
+
+  const entry = registryList().find(p => p.slug === slug);
+  if (!entry) return sendJson(res, 404, { error: 'project not found' });
+
+  const body = await readJsonBody(req).catch(() => null);
+  if (!body || body.id == null) return sendJson(res, 400, { error: 'id 必填' });
+  if (!body.summary || !String(body.summary).trim()) {
+    return sendJson(res, 400, { error: 'summary 不能为空' });
+  }
+
+  try {
+    const result = await markDoneCore(entry.root, {
+      id: body.id,
+      summary: String(body.summary),
+    });
+    sendJson(res, 200, { ok: true, task: result });
+  } catch (err) {
+    sendJson(res, 400, { error: String(err.message) });
+  }
+}
+
+/**
  * 处理 POST /api/projects/:slug/desired-model
  * body: { model } 项目级默认 worker 模型，subagent 派发时用
  * @param {http.IncomingMessage} req
@@ -538,6 +641,33 @@ async function handleDesiredModel(req, res, rawSlug) {
   try {
     const updated = registryUpdate(slug, { desiredModel: model });
     sendJson(res, 200, { ok: true, desiredModel: updated.desiredModel });
+  } catch (err) {
+    sendJson(res, 400, { error: String(err.message) });
+  }
+}
+
+/**
+ * 处理 POST /api/projects/:slug/hidden
+ * body: { hidden: boolean } 把项目从主列表隐藏/显示
+ * @param {http.IncomingMessage} req
+ * @param {http.ServerResponse} res
+ * @param {string} rawSlug
+ */
+async function handleHidden(req, res, rawSlug) {
+  const slug = decodeURIComponent(rawSlug);
+  if (!SLUG_RE.test(slug)) return sendJson(res, 400, { error: 'invalid slug format' });
+
+  const entry = registryList().find(p => p.slug === slug);
+  if (!entry) return sendJson(res, 404, { error: 'project not found' });
+
+  const body = await readJsonBody(req).catch(() => null);
+  if (!body || typeof body.hidden !== 'boolean') {
+    return sendJson(res, 400, { error: 'hidden 必须是 boolean' });
+  }
+
+  try {
+    const updated = registryUpdate(slug, { hidden: body.hidden });
+    sendJson(res, 200, { ok: true, hidden: updated.hidden });
   } catch (err) {
     sendJson(res, 400, { error: String(err.message) });
   }
@@ -1006,6 +1136,12 @@ function handle(req, res) {
     return;
   }
 
+  const scanM = pathname.match(/^\/api\/projects\/([^/]+)\/scan-now$/);
+  if (scanM && req.method === 'POST') {
+    handleScanNow(req, res, scanM[1]).catch(err => sendJson(res, 500, { error: String(err.message) }));
+    return;
+  }
+
   const addRowM = pathname.match(/^\/api\/projects\/([^/]+)\/add-row$/);
   if (addRowM && req.method === 'POST') {
     handleAddRow(req, res, addRowM[1]).catch(err => sendJson(res, 500, { error: String(err.message) }));
@@ -1037,9 +1173,21 @@ function handle(req, res) {
     return;
   }
 
+  const markDoneM = pathname.match(/^\/api\/projects\/([^/]+)\/mark-done$/);
+  if (markDoneM && req.method === 'POST') {
+    handleMarkDone(req, res, markDoneM[1]).catch(err => sendJson(res, 500, { error: String(err.message) }));
+    return;
+  }
+
   const desiredModelM = pathname.match(/^\/api\/projects\/([^/]+)\/desired-model$/);
   if (desiredModelM && req.method === 'POST') {
     handleDesiredModel(req, res, desiredModelM[1]).catch(err => sendJson(res, 500, { error: String(err.message) }));
+    return;
+  }
+
+  const hiddenM = pathname.match(/^\/api\/projects\/([^/]+)\/hidden$/);
+  if (hiddenM && req.method === 'POST') {
+    handleHidden(req, res, hiddenM[1]).catch(err => sendJson(res, 500, { error: String(err.message) }));
     return;
   }
 
@@ -1101,4 +1249,4 @@ async function startServer({ port = 5732, host = '127.0.0.1' } = {}) {
   };
 }
 
-module.exports = { startServer };
+module.exports = { startServer, __setExecFileSyncImpl };

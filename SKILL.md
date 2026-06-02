@@ -20,7 +20,7 @@ description: 任务队列自动化 — 用户在 Excel 加任务，配合 /loop 
 | `/task-queue dashboard` / "启动面板" / "打开控制台" | 跑 `dashboard` 启动 Web 服务，告知 URL |
 | "暂停队列" / "pause loop" | 跑 `dashboard pause <slug>` 或提示在面板操作 |
 | "恢复队列" / "resume loop" | 跑 `dashboard resume <slug>` 或提示在面板操作 |
-| "立即执行" / "马上扫" / "wake now" | 在面板点 ⚡ 立即执行，或 POST `/api/projects/<slug>/wake-now`；loop 在 ≤ idleSleepSeconds（默认 270s）内响应 |
+| "立即执行" / "马上扫" / "wake now" | 在面板点 ⚡ 立即执行 或 POST `/api/projects/<slug>/scan-now`：tmux 启动的 loop 走 send-keys 注入 stdin ~1s 响应；否则降级 wake-now 旗子（≤ idleSleepSeconds，默认 270s） |
 
 ## §init 流程
 
@@ -82,19 +82,39 @@ git commit -m "task-queue: 接入任务队列（ignore .tasks/）"
 
 ## §start 流程
 
-启动持续任务循环。
+启动持续任务循环。**推荐 tmux 启动**（dashboard ⚡ 按钮才能即时唤醒,不受 idleSleepSeconds 限制）。
+
+最简流程：
 
 ```
-建议在一个独立的常驻 terminal 里启动这个 loop，关掉这个会话不影响。
+在独立 terminal 里跑 loop，关掉当前会话不影响。
 
-启动命令（请你复制到目标终端执行 /loop）：
+最快的做法：先打开 dashboard 面板，点项目顶上的「📋 复制启动命令」，
+拿到 tmux 启动脚本（已替换 ${PROJECT_ROOT}），粘到 terminal 执行即可。
 
-  /loop 读 ~/.claude/skills/task-queue/loop-prompt.md 并按流程执行 ${PROJECT_ROOT} 的任务
+脚本形态（多行,逐行执行；session 名规约为 task-queue-loop-<slug>）：
 
-将 ${PROJECT_ROOT} 替换为：<absolute project root>
+  SESSION='task-queue-loop-<slug>'
+  PROMPT_FILE="${TMPDIR:-/tmp}/tq-loop-<slug>.prompt"
+  cat > "$PROMPT_FILE" <<'TQ_PROMPT_END'
+  <loop-prompt.md 全文,PROJECT_ROOT 已替换>
+  TQ_PROMPT_END
+  tmux new-session -ds "$SESSION" -c '<project-root>' "$SHELL"
+  tmux send-keys -t "$SESSION" "claude --dangerously-skip-permissions \"/loop \$(cat '$PROMPT_FILE')\"" Enter
+  tmux attach -t "$SESSION"
 
-启动后，每 15-60 分钟 Claude 会自动扫一次任务表。
+启动后，dashboard 面板「⚡ 立即执行」按钮通过 tmux send-keys 把"扫一下"
+注入 loop stdin，~1s 内 loop 响应；没用 tmux 启动则降级 wake-now 旗子，
+响应延迟 ≤ idleSleepSeconds（默认 270s）。
 ```
+
+**Fallback（不用 tmux）：** 用户明确不想要 tmux 时,旧形态一行命令仍然可用：
+
+```
+/loop 读 ~/.claude/skills/task-queue/loop-prompt.md 并按流程执行 ${PROJECT_ROOT} 的任务
+```
+
+但此时面板 ⚡ 按钮只能走 wake-now 文件旗子,响应延迟 ≤ idleSleepSeconds。
 
 不要在当前会话直接调用 /loop（除非用户明示）—— 当前会话用来设计/初始化，loop 应该跑在独立会话避免冲突。
 
@@ -134,6 +154,7 @@ node ~/.claude/skills/task-queue/tasks.cjs add-row /path/proj "登录按钮没�
 | `done <root> <id> [summary]` | 标完成 + summary 落 note 顶部(dashboard 完成区显示),根据 config 决定 auto commit |
 | `review <root> <id> "<风险>"` | 标待 review |
 | `block <root> <id> "<疑问>"` | 标阻塞 |
+| `mark-done <root> <id> "<说明>"` | 把 待review/阻塞 任务手动标记为已完成并归档（不 commit；说明落 note 顶部） |
 | `status <root>` | 输出 `{todo, in_progress, review, blocked, done_today}` |
 | `sweep <root>` | 把已完成/跳过剪到已完结 sheet |
 | `recover <root>` | crash recovery |
@@ -166,17 +187,19 @@ node ~/.claude/skills/task-queue/tasks.cjs dashboard
 - 点 "改优先级" 调整待办的高/中/低
 - 点 "pause" 暂停 loop（正在执行的任务跑完后停下；下一轮 next 不取）
 - 点 "resume" 恢复
-- 点 "⚡ 立即执行" 让 loop 在 ≤ `idleSleepSeconds`（默认 270s）内立刻扫一次任务表。paused/offline/missing 状态下按钮 disabled
+- 点 "⚡ 立即执行"：tmux 启动的 loop 通过 send-keys 把"扫一下"注入 stdin，~1s 响应；非 tmux 启动则降级写 wake-now 旗子，loop 在 ≤ `idleSleepSeconds`（默认 270s）的下次唤醒时消费。paused/offline/missing 状态下按钮 disabled
 
 ### idleSleepSeconds：响应延迟与成本平衡
 
+> **tmux 启动的 loop 不受此设置约束** —— ⚡ 立即执行通过 send-keys 即时唤醒,只剩"完全 idle 等任务"时才走这个 sleep。
+
 loop 空转/等待时的 sleep 间隔由 `.tasks/project.config.js` 的 `idleSleepSeconds` 字段控制（范围 [60, 3600]，默认 270）：
 
-- **默认 270s**：刚好在 Anthropic prompt cache 5 分钟 TTL 内；"立即执行"按钮响应延迟 ≤ 270s
+- **默认 270s**：刚好在 Anthropic prompt cache 5 分钟 TTL 内；非 tmux 模式下"立即执行"响应延迟 ≤ 270s
 - **调大省 token**（如 1200 / 1800 / 3600）：响应慢，但显著省 cache 重建开销
 - **调小更快**（如 60 / 120）：响应快，但每次 sleep < TTL 时 cache 仍命中，超过即每轮 cache miss
 
-成本量级估算（Opus 4.7、8h/天在线、4h idle）：270s 默认 ≈ $200/月增量 vs 3600s。如果不在意延迟，调到 1200s 起即可显著省。
+成本量级估算（Opus 4.7、8h/天在线、4h idle）：270s 默认 ≈ $200/月增量 vs 3600s。tmux 启动 + 调大 idleSleepSeconds 是同时拿到「即时响应」+「省 token」的组合。
 
 ### 多项目聚合
 

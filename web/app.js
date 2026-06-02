@@ -6,13 +6,15 @@ const state = {
   detail: null,
   doneCollapsed: true,
   kanbanCollapsed: false,
-  collapsedCards: new Set(),
+  expandedCards: new Set(),
   addModal: null,
   loopCmdModal: null,
   replyModal: null,
+  markDoneModal: null,
   imagePreview: null,
   cardDetailModal: null,
   historyModal: null,
+  hiddenExpanded: false,
 };
 
 const LONG_TEXT_THRESHOLD = 120;
@@ -54,6 +56,28 @@ function el(tag, attrs = {}, ...children) {
     e.appendChild(typeof c === 'string' ? document.createTextNode(c) : c);
   }
   return e;
+}
+
+/**
+ * 右下角非阻塞 toast。点击可立即关闭。
+ * variant: 'info' | 'success' | 'warn' | 'error'
+ */
+function showToast(msg, variant = 'info', durationMs = 4000) {
+  let stack = document.getElementById('toast-stack');
+  if (!stack) {
+    stack = el('div', { id: 'toast-stack' });
+    document.body.appendChild(stack);
+  }
+  const node = el('div', { className: `toast toast-${variant}` }, msg);
+  stack.appendChild(node);
+  requestAnimationFrame(() => node.classList.add('toast-in'));
+  const close = () => {
+    node.classList.remove('toast-in');
+    node.classList.add('toast-out');
+    setTimeout(() => node.remove(), 200);
+  };
+  const timer = setTimeout(close, durationMs);
+  node.addEventListener('click', () => { clearTimeout(timer); close(); });
 }
 
 async function fetchProjects() {
@@ -406,61 +430,7 @@ function buildChecklistSection(task, group) {
   );
 }
 
-const NOTE_HEADER_RE = /^\[(.+?)\]\s*$/;
-
-function parseNoteBlocks(note) {
-  if (!note) return [];
-  const lines = String(note).replace(/\r\n/g, '\n').split('\n');
-  const blocks = [];
-  let cur = null;
-  for (const line of lines) {
-    const m = line.match(NOTE_HEADER_RE);
-    if (m) {
-      if (cur) blocks.push(cur);
-      cur = { header: m[1], bodyLines: [] };
-    } else {
-      if (!cur) cur = { header: null, bodyLines: [] };
-      cur.bodyLines.push(line);
-    }
-  }
-  if (cur) blocks.push(cur);
-  for (const b of blocks) {
-    while (b.bodyLines.length && b.bodyLines[b.bodyLines.length - 1].trim() === '') b.bodyLines.pop();
-    while (b.bodyLines.length && b.bodyLines[0].trim() === '') b.bodyLines.shift();
-  }
-  return blocks.filter(b => b.header || b.bodyLines.length);
-}
-
-function classifyNoteBlock(block) {
-  if (!block.header) return { kind: 'other', header: null };
-  const h = block.header.trim();
-  let m;
-  m = h.match(/^done\s+(.+)$/i);
-  if (m) return { kind: 'done', when: m[1].trim() };
-  m = h.match(/^(.+?)\s+回复\s+(LATEST|OBSOLETE)\s+(.+)$/i);
-  if (m) return { kind: 'reply', user: m[1].trim(), latest: m[2].toUpperCase() === 'LATEST', when: m[3].trim() };
-  m = h.match(/^reply\s+(LATEST|OBSOLETE)\s+(.+)$/i);
-  if (m) return { kind: 'reply', user: null, latest: m[1].toUpperCase() === 'LATEST', when: m[2].trim() };
-  return { kind: 'other', header: h };
-}
-
-function splitReplyBody(bodyLines) {
-  let answerIdx = -1;
-  for (let i = 0; i < bodyLines.length; i++) {
-    if (/^A:\s*/i.test(bodyLines[i])) { answerIdx = i; break; }
-  }
-  if (answerIdx < 0) return { contextLines: [], answerLines: bodyLines.slice() };
-  return {
-    contextLines: bodyLines.slice(0, answerIdx),
-    answerLines: [bodyLines[answerIdx].replace(/^A:\s*/i, ''), ...bodyLines.slice(answerIdx + 1)],
-  };
-}
-
-function splitContextLine(line) {
-  const m = line.match(/^(Q|Risk):\s*(.*)$/i);
-  if (!m) return { label: null, text: line };
-  return { label: m[1].toLowerCase() === 'risk' ? '⚠ Risk' : '? 疑问', text: m[2] };
-}
+const { parseNoteBlocks, classifyNoteBlock, splitReplyBody, splitContextLine } = window.NoteBlocks;
 
 function renderNoteBlock(block) {
   const meta = classifyNoteBlock(block);
@@ -624,6 +594,14 @@ function renderCardDetailModal() {
         openReplyModal(t, group);
       },
     }, '💬 回复'));
+    actions.push(el('button', {
+      className: 'btn',
+      title: '直接标记为已完成并归档（不跑 commit）',
+      onclick: () => {
+        closeCardDetailModal();
+        openMarkDoneModal(t, group);
+      },
+    }, '✓ 标完成'));
   }
   actions.push(el('button', { className: 'btn', onclick: closeCardDetailModal },
     getCardDetailSiblings().length > 1 ? '关闭 (ESC) · ← → 切换' : '关闭 (ESC)'));
@@ -695,8 +673,15 @@ function statusLabel(p) {
 function renderProjects() {
   const list = $('#project-list');
   list.innerHTML = '';
-  const visible = state.projects.filter(p => p.online !== 'missing');
-  const hiddenCount = state.projects.length - visible.length;
+  const all = state.projects;
+  const missing = all.filter(p => p.online === 'missing');
+  const visible = all.filter(p => p.online !== 'missing' && !p.hidden);
+  const hidden = all.filter(p => p.online !== 'missing' && p.hidden);
+
+  if (state.selectedSlug && hidden.some(p => p.slug === state.selectedSlug)) {
+    state.selectedSlug = null;
+    state.detail = null;
+  }
 
   if (visible.length === 0) {
     list.appendChild(el('div', { className: 'project-item' }, '（无已注册项目）'));
@@ -710,20 +695,63 @@ function renderProjects() {
           el('span', { className: `dot ${p.online}` }), p.name,
         ),
         el('div', { className: 'summary' }, statusLabel(p)),
+        el('button', {
+          className: 'hide-btn',
+          title: '隐藏此项目',
+          onclick: (ev) => { ev.stopPropagation(); setHidden(p.slug, true); },
+        }, '×'),
       );
       list.appendChild(item);
     }
   }
 
-  if (hiddenCount > 0) {
+  if (missing.length > 0) {
     list.appendChild(el('div', { className: 'hidden-hint' },
-      el('span', null, `${hiddenCount} 个失联项目已隐藏`),
+      el('span', null, `${missing.length} 个失联项目已隐藏`),
       el('button', {
         className: 'btn',
-        onclick: () => cleanupMissing(hiddenCount),
+        onclick: () => cleanupMissing(missing.length),
       }, '清理'),
     ));
   }
+
+  if (hidden.length > 0) {
+    const expanded = state.hiddenExpanded === true;
+    const section = el('div', { className: 'hidden-section' },
+      el('button', {
+        className: 'hidden-toggle',
+        onclick: () => { state.hiddenExpanded = !expanded; renderProjects(); },
+      }, `${expanded ? '▾' : '▸'} 已隐藏 (${hidden.length})`),
+    );
+    if (expanded) {
+      const listEl = el('div', { className: 'hidden-list' });
+      for (const p of hidden) {
+        const item = el('div', { className: 'project-item dim' },
+          el('div', { className: 'name' },
+            el('span', { className: `dot ${p.online}` }), p.name,
+          ),
+          el('button', {
+            className: 'show-btn btn',
+            title: '从隐藏区恢复',
+            onclick: (ev) => { ev.stopPropagation(); setHidden(p.slug, false); },
+          }, '显示'),
+        );
+        listEl.appendChild(item);
+      }
+      section.appendChild(listEl);
+    }
+    list.appendChild(section);
+  }
+}
+
+async function setHidden(slug, hidden) {
+  const r = await postAction(`/api/projects/${slug}/hidden`, { hidden });
+  if (!r.ok) {
+    alert(`${hidden ? '隐藏' : '显示'}项目失败: ${r.body?.error || r.status}`);
+    return;
+  }
+  if (!hidden) state.hiddenExpanded = true;
+  await refreshProjects();
 }
 
 function renderCard(t, group) {
@@ -741,7 +769,7 @@ function renderCard(t, group) {
   if (t.question) chips.push(el('span', { className: 'chip question', title: t.question }, '? 疑问'));
 
   const cardKey = `${state.selectedSlug}:${t.id}`;
-  const collapsed = state.collapsedCards.has(cardKey);
+  const expanded = state.expandedCards.has(cardKey);
   // review 看风险,blocked 看疑问,done 看 note(commit hash / 模块 / 文件等审查信息)
   const extra = group === 'review' ? t.risk
     : group === 'blocked' ? t.question
@@ -749,6 +777,7 @@ function renderCard(t, group) {
     : '';
   const totalLen = (t.desc || '').length + (extra || '').length;
   const collapsible = totalLen > LONG_TEXT_THRESHOLD;
+  const showCollapsed = collapsible && !expanded;
 
   const children = [
     el('div', { className: 'card-desc' },
@@ -800,11 +829,11 @@ function renderCard(t, group) {
         className: 'btn-link',
         onclick: (e) => {
           e.stopPropagation();
-          if (collapsed) state.collapsedCards.delete(cardKey);
-          else state.collapsedCards.add(cardKey);
+          if (expanded) state.expandedCards.delete(cardKey);
+          else state.expandedCards.add(cardKey);
           renderDetail();
         },
-      }, collapsed ? '▾ 展开' : '▴ 收起'),
+      }, showCollapsed ? '▾ 展开' : '▴ 收起'),
     ));
   }
 
@@ -849,12 +878,18 @@ function renderCard(t, group) {
           className: 'btn primary',
           onclick: () => openReplyModal(t, group),
         }, '💬 回复'),
+        el('button', {
+          className: 'btn',
+          title: '直接标记为已完成并归档（不跑 commit）',
+          onclick: () => openMarkDoneModal(t, group),
+        }, '✓ 标完成'),
+        el('button', { className: 'btn danger', onclick: () => skipTask(t.id) }, 'skip'),
       ));
     }
   }
 
   return el('div', {
-    className: 'card card-clickable' + (collapsible && collapsed ? ' collapsed' : ''),
+    className: 'card card-clickable' + (showCollapsed ? ' collapsed' : ''),
     onclick: (e) => {
       // 跳过点到内部交互元素(按钮、链接、缩略图)的情况,只处理"点了卡片空白区"
       if (e.target.closest('button, a, select, .btn-link, .attach-inline-link, .card-attach-strip')) return;
@@ -960,8 +995,8 @@ function renderDetail() {
     title: p.paused ? '已暂停轮询，先恢复再点立即执行'
       : (p.online === 'offline' || p.online === 'missing') ? 'loop 未运行'
       : p.wakeNow ? '已发出立即执行请求，等 loop 响应'
-      : '让 loop 在下次唤醒时（≤ idleSleepSeconds）立刻扫一次任务',
-    onclick: () => wakeNowProject(),
+      : 'tmux 启动的 loop：把"扫一下"注入 stdin，~1s 响应；否则降级 wake-now 旗子（≤ idleSleepSeconds）',
+    onclick: () => scanNowProject(),
   }, p.wakeNow ? '⏳ 唤醒中…' : '⚡ 立即执行');
 
   const addBtn = el('button', {
@@ -974,7 +1009,7 @@ function renderDetail() {
   const loopBtn = el('button', {
     className: 'btn',
     onclick: () => openLoopCmdModal(),
-    title: '生成并复制启动命令，粘贴到 terminal 即可跑起 loop',
+    title: '生成 tmux 启动脚本（粘到 terminal 即跑；启动后 ⚡ 立即执行 通过 send-keys 即时唤醒）',
   }, '📋 复制启动命令');
 
   const desired = p.desiredModel || 'opus';
@@ -1671,14 +1706,16 @@ function renderLoopCmdModal() {
   const cmdArea = el('textarea', {
     className: 'modal-input loop-cmd-area',
     readonly: '',
-    rows: 8,
+    rows: 12,
     placeholder: m.loading ? '生成中…' : '',
   });
   cmdArea.value = m.command || '';
   cmdArea.addEventListener('focus', () => cmdArea.select());
 
   const hint = el('div', { className: 'modal-error' },
-    m.error ? m.error : m.copied ? '✓ 已复制，去 terminal 粘贴即可启动' : '在项目目录下粘贴这条命令即可启动 loop',
+    m.error ? m.error
+      : m.copied ? '✓ 已复制，去 terminal 粘贴即可启动 loop（tmux session 名: task-queue-loop-<slug>）'
+      : '粘到 terminal 会起一个 tmux session 把 loop 跑在里面；⚡ 立即执行按钮会向这个 session send-keys "扫一下"',
   );
 
   const modal = el('div', {
@@ -1687,8 +1724,8 @@ function renderLoopCmdModal() {
     onclick: e => { if (e.target.id === 'loop-cmd-modal') closeLoopCmdModal(); },
   },
     el('div', { className: 'modal' },
-      el('div', { className: 'modal-title' }, 'loop 启动命令'),
-      el('label', { className: 'modal-label' }, '完整命令（已替换 PROJECT_ROOT）', cmdArea),
+      el('div', { className: 'modal-title' }, 'loop 启动脚本 (tmux)'),
+      el('label', { className: 'modal-label' }, 'tmux 启动脚本（已替换 PROJECT_ROOT；启动后支持 ⚡ 即时唤醒）', cmdArea),
       hint,
       el('div', { className: 'modal-actions' },
         el('button', { className: 'btn', onclick: closeLoopCmdModal }, '关闭'),
@@ -1897,7 +1934,7 @@ async function submitReplyAndCopyLoop() {
 
   closeReplyModal();
   await refreshProjects();
-  alert('✓ 回复已落库（状态转回待办），loop 启动命令已复制到剪贴板，去 terminal 粘贴即可让 claude 接手');
+  alert('✓ 回复已落库（状态转回待办），tmux 启动脚本已复制到剪贴板，去 terminal 粘贴即可让 loop 接手');
 }
 
 function renderReplyModal() {
@@ -1978,6 +2015,100 @@ function renderReplyModal() {
   replyInput.focus();
 }
 
+function openMarkDoneModal(task, group) {
+  state.markDoneModal = {
+    id: task.id,
+    group,
+    desc: task.desc || '',
+    extra: group === 'review' ? (task.risk || '') : (task.question || ''),
+    summary: '',
+    error: '',
+    submitting: false,
+  };
+  renderMarkDoneModal();
+}
+
+function closeMarkDoneModal() {
+  state.markDoneModal = null;
+  renderMarkDoneModal();
+}
+
+async function submitMarkDone() {
+  const m = state.markDoneModal;
+  if (!m || m.submitting) return;
+  if (!m.summary.trim()) {
+    m.error = '说明不能为空（写一句话解释为什么直接标完成即可）';
+    renderMarkDoneModal();
+    return;
+  }
+  m.submitting = true;
+  m.error = '';
+  renderMarkDoneModal();
+
+  const r = await postAction(`/api/projects/${state.selectedSlug}/mark-done`, {
+    id: m.id,
+    summary: m.summary.trim(),
+  });
+  if (r.ok) {
+    closeMarkDoneModal();
+    await refreshProjects();
+  } else {
+    m.submitting = false;
+    m.error = r.body?.error || `失败 (${r.status})`;
+    renderMarkDoneModal();
+  }
+}
+
+function renderMarkDoneModal() {
+  const existing = document.getElementById('mark-done-modal');
+  if (existing) existing.remove();
+  if (!state.markDoneModal) return;
+
+  const m = state.markDoneModal;
+
+  const summaryInput = el('textarea', {
+    className: 'modal-input',
+    rows: 4,
+    placeholder: '说明：为什么这条直接算完成？（必填，写到归档 [done] 块里）',
+    autocomplete: 'off',
+    autocorrect: 'off',
+    autocapitalize: 'off',
+    spellcheck: 'false',
+  });
+  summaryInput.value = m.summary || '';
+  bindImeSafeInput(summaryInput, v => { m.summary = v; });
+
+  const extraBlock = m.extra ? el('div', { className: 'reply-extra' },
+    el('div', { className: 'reply-extra-label' }, m.group === 'review' ? '原 风险' : '原 疑问'),
+    el('div', { className: 'reply-extra-body' }, ...linkifyText(m.extra)),
+  ) : null;
+
+  const errorBox = el('div', { className: 'modal-error' }, m.error || '');
+
+  const modal = el('div', {
+    id: 'mark-done-modal',
+    className: 'modal-backdrop',
+    onclick: e => { if (e.target.id === 'mark-done-modal') closeMarkDoneModal(); },
+  },
+    el('div', { className: 'modal' },
+      el('div', { className: 'modal-title' }, `标记完成 #${m.id} ${m.desc.slice(0, 40)}${m.desc.length > 40 ? '…' : ''}`),
+      extraBlock,
+      el('label', { className: 'modal-label' }, '说明', summaryInput),
+      errorBox,
+      el('div', { className: 'modal-actions' },
+        el('button', { className: 'btn', onclick: closeMarkDoneModal }, '取消'),
+        el('button', {
+          className: 'btn primary',
+          disabled: m.submitting,
+          onclick: submitMarkDone,
+        }, m.submitting ? '提交中…' : '✓ 标记完成并归档'),
+      ),
+    ),
+  );
+  document.body.appendChild(modal);
+  summaryInput.focus();
+}
+
 async function refreshProjects() {
   try {
     const data = await fetchProjects();
@@ -2003,7 +2134,11 @@ async function selectProject(slug) {
 
 async function skipTask(id) {
   if (!confirm(`确认跳过任务 #${id}？`)) return;
-  await postAction(`/api/projects/${state.selectedSlug}/skip`, { id });
+  const r = await postAction(`/api/projects/${state.selectedSlug}/skip`, { id });
+  if (!r.ok) {
+    alert(`跳过失败 (HTTP ${r.status}): ${r.body?.error || '未知错误'}`);
+    return;
+  }
   await refreshProjects();
 }
 
@@ -2025,9 +2160,23 @@ async function resumeProject() {
   await refreshProjects();
 }
 
-async function wakeNowProject() {
-  await postAction(`/api/projects/${state.selectedSlug}/wake-now`, {});
+async function scanNowProject() {
+  const r = await postAction(`/api/projects/${state.selectedSlug}/scan-now`, {});
+  if (!r.ok) {
+    showToast(`立即执行失败 (HTTP ${r.status}): ${r.body?.error || '未知错误'}`, 'error', 5000);
+    return;
+  }
+  if (r.body?.mode === 'tmux') {
+    showToast('已通过 tmux 注入"扫一下"；loop 当前若正忙，会在当前 turn 结束后处理', 'success');
+  } else if (r.body?.mode === 'wake-flag') {
+    showToast('降级 wake-now 旗子(tmux 不可用)；loop ≤ idleSleepSeconds 内响应', 'warn', 5000);
+  }
+  // 先 refresh 一次：wake-flag 模式立刻把 ⏳ 唤醒中 UI 反馈出来
   await refreshProjects();
+  // tmux 模式 loop ~1-2s 内会跑完 Step 0.5+next+claim，1.5s 延迟再 refresh 让卡片可视化挪到「进行中」
+  if (r.body?.mode === 'tmux') {
+    setTimeout(() => { refreshProjects().catch(() => {}); }, 1500);
+  }
 }
 
 async function changeDesiredModel(model) {

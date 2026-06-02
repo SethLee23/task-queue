@@ -54,6 +54,21 @@ Claude：→ add-row . "登录按钮没居中" web 中
 
 ### 3. 启动 loop（在独立终端）
 
+**推荐 tmux 启动** —— 面板 ⚡ 按钮才能即时唤醒。最快做法：先开 dashboard（§4），点项目顶上的「📋 复制启动命令」按钮，拿到 tmux 启动脚本（已替换 PROJECT_ROOT），粘到 terminal 跑即可。脚本形态：
+
+```bash
+SESSION='task-queue-loop-<slug>'
+PROMPT_FILE="${TMPDIR:-/tmp}/tq-loop-<slug>.prompt"
+cat > "$PROMPT_FILE" <<'TQ_PROMPT_END'
+<loop-prompt.md 全文,PROJECT_ROOT 已替换>
+TQ_PROMPT_END
+tmux new-session -ds "$SESSION" -c '/path/to/project' "$SHELL"
+tmux send-keys -t "$SESSION" "claude --dangerously-skip-permissions \"/loop \$(cat '$PROMPT_FILE')\"" Enter
+tmux attach -t "$SESSION"
+```
+
+**Fallback** —— 不想用 tmux 时,旧形态一行仍可用,但面板 ⚡ 只能走 wake-now 旗子,响应 ≤ idleSleepSeconds（默认 270s）:
+
 ```
 /loop 读 ~/.claude/skills/task-queue/loop-prompt.md 并按流程执行 /path/to/project 的任务
 ```
@@ -69,11 +84,15 @@ node ~/.claude/skills/task-queue/tasks.cjs dashboard
 
 面板能力：
 - 看每个项目当前在跑哪条 + 上次心跳 + 模型
-- 点 **skip** 跳过一条待办
+- 点 **skip** 跳过一条待办 / 待 review / 阻塞
 - 点 **改优先级** 调高/中/低
 - 点 **pause** 暂停 loop（不打断正在执行的任务，下一轮 next 不取新任务）
 - 点 **resume** 恢复
+- 点 **⚡ 立即执行** —— tmux 启动的 loop 通过 send-keys 把"扫一下"注入 stdin（~1s 响应,跳过 ScheduleWakeup 倒计时);非 tmux 启动则降级 wake-now 旗子（≤ idleSleepSeconds）
+- 点 **📋 复制启动命令** 拿到 tmux 启动脚本（带 PROJECT_ROOT 替换）
 - 点 **删除** 把项目移出注册表
+
+> **tmux session 名规约**: `task-queue-loop-<slug>`。loop 退出但 session 残留时,⚡ 会把"扫一下"键入裸 shell —— 看到 phase=offline 时执行 `tmux kill-session -t task-queue-loop-<slug>` 后重启。
 
 ## 子命令速查
 
@@ -132,6 +151,7 @@ node ~/.claude/skills/task-queue/tasks.cjs dashboard
 - 主要在 **macOS** 上验证（桌面通知通道是 macOS 专属）
 - 任务表读写 / dashboard 跨平台
 - Linux/Windows 上桌面通知通道暂未实现，欢迎 PR
+- **tmux 是 ⚡ 即时唤醒的依赖**（macOS / Linux 通用;不装 tmux 仍能用,只是 ⚡ 走 wake-now 旗子 fallback）
 
 ## 版本
 

@@ -11,6 +11,7 @@ const { Logger } = require('../lib/logger.cjs');
 const { gitStatus, gitAdd, gitCommit, gitRevParseHead, gitLogToday } = require('../lib/git.cjs');
 const { writeHeartbeat } = require('../lib/heartbeat.cjs');
 const { localTimestamp } = require('../lib/datetime.cjs');
+const { parseChecklist, summarize } = require('../lib/checklist.cjs');
 
 /**
  * 拼一段 `[done ts]` 块，写到 note 顶部供 dashboard 完成区展示。
@@ -66,35 +67,35 @@ async function moveRowToArchive(xlsxPath, rowData) {
 }
 
 /**
- * 更新进行中表指定行的 status / risk / ftime 字段。
- * @param {string} xlsxPath
- * @param {number} rowNumber 1-based 行号
- * @param {string} status
- * @param {string|null} risk 为 null 时不写
- * @param {string|null} ftime 为 null 时不写
- */
-async function setStatusAndRisk(xlsxPath, rowNumber, status, risk, ftime) {
-  await withWorkbook(xlsxPath, async wb => {
-    const ws = wb.getWorksheet(SHEET_IN_PROGRESS);
-    const r = ws.getRow(rowNumber);
-    r.getCell(colIndex('status')).value = status;
-    if (risk != null) r.getCell(colIndex('risk')).value = risk;
-    if (ftime != null) r.getCell(colIndex('ftime')).value = ftime;
-    r.commit();
-  });
-}
-
-/**
  * 状态置为"已完成-待review"并写入风险提示，同时打日志。
+ *
+ * 关键:worker 传入的 summary 代表它的成果/答案(回答型任务里 summary 就是完整答案),
+ * 转 review 不能把它丢掉 —— 否则 dashboard 完成/历史区什么都看不到,用户看到的是"空回复"
+ * (回归 2026-05-29 ditto 任务 #14)。非空 summary 一律作为 [done] 块写进 note 顶部保全,
+ * 与归档路径的落盘形态一致;risk 列单独承载"为什么需要 review"。
+ *
  * @param {string} xlsxPath
  * @param {number} rowNumber
  * @param {string} riskMsg
  * @param {Logger} logger
  * @param {string} projectRoot
  * @param {number|string} taskId
+ * @param {{summary?: string, oldNote?: string}} [opts] summary 非空时写进 note 的 [done] 块
  */
-async function transitionToReview(xlsxPath, rowNumber, riskMsg, logger, projectRoot, taskId) {
-  await setStatusAndRisk(xlsxPath, rowNumber, STATES.REVIEW, riskMsg, null);
+async function transitionToReview(xlsxPath, rowNumber, riskMsg, logger, projectRoot, taskId, opts = {}) {
+  const { summary, oldNote } = opts;
+  const keepSummary = summary != null && String(summary).trim() !== '';
+  await withWorkbook(xlsxPath, async wb => {
+    const ws = wb.getWorksheet(SHEET_IN_PROGRESS);
+    const r = ws.getRow(rowNumber);
+    r.getCell(colIndex('status')).value = STATES.REVIEW;
+    r.getCell(colIndex('risk')).value = riskMsg;
+    if (keepSummary) {
+      const block = `[done ${localTimestamp()}]\n${String(summary).trim()}`;
+      r.getCell(colIndex('note')).value = prependDoneBlock(oldNote, block);
+    }
+    r.commit();
+  });
   if (logger) logger.warn(`task → review: ${riskMsg}`);
   writeHeartbeat(projectRoot, {
     phase: 'idle',
@@ -102,6 +103,36 @@ async function transitionToReview(xlsxPath, rowNumber, riskMsg, logger, projectR
     lastFinishedId: taskId,
     lastFinishedAt: new Date().toISOString(),
   });
+}
+
+/**
+ * checklist 未做完时,worker 误调 done 的兜底:状态回退到 TODO,note 顶部追加被拒说明 + worker
+ * 给出的 summary,heartbeat 置 idle 但不写 lastFinishedId(任务并未结束)。下一轮 loop 会重新
+ * dispatch,worker 看到 checklist 已勾项 + note 里的"上轮被拒"提示后从首个未勾项续做。
+ * @param {string} xlsxPath
+ * @param {object} target 含 _rowNumber/note 的行对象
+ * @param {string} summary worker 误传的完成总结(保留给用户参考)
+ * @param {{done:number, total:number, nextUndone:string|null}} s 摘要
+ * @param {Logger} logger
+ * @param {string} projectRoot
+ */
+async function revertToTodoForIncompleteChecklist(xlsxPath, target, summary, s, logger, projectRoot) {
+  const ts = localTimestamp();
+  const nextHint = s.nextUndone ? `,下一项: ${s.nextUndone}` : '';
+  const summaryLine = summary && String(summary).trim()
+    ? `\nworker summary: ${String(summary).trim()}`
+    : '';
+  const tag = `[done 被拒 ${ts}] checklist 仅 ${s.done}/${s.total} 完成${nextHint}。任务已回退到待办,下一轮 loop 将续做剩余项。${summaryLine}`;
+  await withWorkbook(xlsxPath, async wb => {
+    const ws = wb.getWorksheet(SHEET_IN_PROGRESS);
+    const r = ws.getRow(target._rowNumber);
+    r.getCell(colIndex('status')).value = STATES.TODO;
+    const prevNote = target.note || '';
+    r.getCell(colIndex('note')).value = prevNote ? `${tag}\n---\n${prevNote}` : tag;
+    r.commit();
+  });
+  if (logger) logger.warn(`task #${target.id} done 被拒(checklist ${s.done}/${s.total}),回退到 TODO`);
+  writeHeartbeat(projectRoot, { phase: 'idle', currentTaskId: null });
 }
 
 /**
@@ -136,6 +167,18 @@ module.exports = async function done(projectRoot, args) {
     throw new Error(`非法转换：${target.status} → 已完成（必须先 claim 进入进行中）`);
   }
 
+  // checklist 防御:worker 在子项未做完时调 done 是常见误判(prompt 写明也照犯,尤其 Sonnet/Haiku)。
+  // 任一项未勾 → 回退到 TODO 让 loop 自动续做,避免用户看到 6/8 进度的任务被错误归档。
+  // 空 checklist / 全勾 → 跳过,走正常流程。
+  const checklistItems = parseChecklist(target.checklist);
+  if (checklistItems.length > 0) {
+    const s = summarize(checklistItems);
+    if (s.done < s.total) {
+      await revertToTodoForIncompleteChecklist(xlsxPath, target, summary, s, logger, projectRoot);
+      return;
+    }
+  }
+
   // summary 强制要求:空 summary 转 review,避免 dashboard 上"完成区什么都看不到"的体验事故。
   // 触发条件:loop 没读最新 loop-prompt 或人工调 done 时漏传。把 risk 写明白让人/AI 都能 reply 补上。
   if (!summary || !String(summary).trim()) {
@@ -155,7 +198,7 @@ module.exports = async function done(projectRoot, args) {
   const scopeName = target.scope;
   const scopeCfg = cfg.scopes[scopeName];
   if (!scopeCfg) {
-    await transitionToReview(xlsxPath, target._rowNumber, `未识别的 scope: ${scopeName}`, logger, projectRoot, target.id);
+    await transitionToReview(xlsxPath, target._rowNumber, `未识别的 scope: ${scopeName}`, logger, projectRoot, target.id, { summary, oldNote: target.note });
     return;
   }
 
@@ -167,12 +210,16 @@ module.exports = async function done(projectRoot, args) {
       logger,
       projectRoot,
       target.id,
+      { summary, oldNote: target.note },
     );
     return;
   }
 
   try {
-    const changedFiles = gitStatus(projectRoot);
+    // .tasks/ 是 task-queue 自身的工作区(配置/工作簿/锁/日志),不应混入业务 commit。
+    // 真实项目不一定会把 .tasks/ 加进 .gitignore(测试 fixture 加了所以测试侧看不到)。
+    // 在 stage 前一律过滤,避免归档 commit 误带 .tasks/project.config.js 等。
+    const changedFiles = gitStatus(projectRoot).filter(p => !p.startsWith('.tasks/'));
     if (changedFiles.length === 0) {
       target.note = prependDoneBlock(target.note, buildDoneBlock({
         ts: localTimestamp(), summary,
@@ -199,11 +246,27 @@ module.exports = async function done(projectRoot, args) {
         logger,
         projectRoot,
         target.id,
+        { summary, oldNote: target.note },
       );
       return;
     }
 
-    const versionFile = path.join(projectRoot, cfg.versionFiles[scopeName]);
+    // versionFiles[scope] 必须配置为指向 package.json 一类文件;空串/未配 → 视为缺配置,转 review。
+    // 否则 path.join(root, '') === root,下面 readFileSync 会抛 EISDIR(目录不可 read)。
+    const versionRel = cfg.versionFiles && cfg.versionFiles[scopeName];
+    if (!versionRel || typeof versionRel !== 'string' || !versionRel.trim()) {
+      await transitionToReview(
+        xlsxPath,
+        target._rowNumber,
+        `versionFiles[${scopeName}] 未配置或为空,无法 bump 版本号;请在 .tasks/project.config.js 补 versionFiles.${scopeName}`,
+        logger,
+        projectRoot,
+        target.id,
+        { summary, oldNote: target.note },
+      );
+      return;
+    }
+    const versionFile = path.join(projectRoot, versionRel);
     const pkg = JSON.parse(fs.readFileSync(versionFile, 'utf8'));
     const currentVersion = pkg.version;
 
@@ -219,31 +282,37 @@ module.exports = async function done(projectRoot, args) {
       fs.writeFileSync(versionFile, JSON.stringify(pkg, null, 2) + '\n');
     }
 
-    const changelogFile = path.join(projectRoot, cfg.changelogFiles[scopeName]);
-    if (!fs.existsSync(changelogFile)) {
-      fs.writeFileSync(changelogFile, '');
+    // changelogFiles[scope] 可选;空串/未配 → 跳过 changelog 追加,只 commit 业务变更。
+    // 历史 bug:空串触发 path.join(root, '') === root → readFileSync 抛 EISDIR,
+    // 整个 commit 流程被吞掉转 review。详见 task #1 2026-05-25。
+    const changelogRel = cfg.changelogFiles && cfg.changelogFiles[scopeName];
+    if (changelogRel && typeof changelogRel === 'string' && changelogRel.trim()) {
+      const changelogFile = path.join(projectRoot, changelogRel);
+      if (!fs.existsSync(changelogFile)) {
+        fs.writeFileSync(changelogFile, '');
+      }
+      const changelogContent = fs.readFileSync(changelogFile, 'utf8');
+      const entryLine = `【${moduleName}】${target.desc}；`;
+      const versionHeader = `## ${version}`;
+      let newChangelog;
+      if (changelogContent.includes(versionHeader)) {
+        // 注意：版本号包含多个 . 需全部转义为 \.
+        const escapedHeader = versionHeader.replace(/\./g, '\\.');
+        newChangelog = changelogContent.replace(
+          new RegExp(`(${escapedHeader}[^\\n]*\\n)`),
+          (_, header) => `${header}${entryLine}\n`,
+        );
+      } else {
+        newChangelog = `${versionHeader}\n${entryLine}\n\n${changelogContent}`;
+      }
+      fs.writeFileSync(changelogFile, newChangelog);
     }
-    const changelogContent = fs.readFileSync(changelogFile, 'utf8');
-    const entryLine = `【${moduleName}】${target.desc}；`;
-    const versionHeader = `## ${version}`;
-    let newChangelog;
-    if (changelogContent.includes(versionHeader)) {
-      // 注意：版本号包含多个 . 需全部转义为 \.
-      const escapedHeader = versionHeader.replace(/\./g, '\\.');
-      newChangelog = changelogContent.replace(
-        new RegExp(`(${escapedHeader}[^\\n]*\\n)`),
-        (_, header) => `${header}${entryLine}\n`,
-      );
-    } else {
-      newChangelog = `${versionHeader}\n${entryLine}\n\n${changelogContent}`;
-    }
-    fs.writeFileSync(changelogFile, newChangelog);
 
-    const allChanged = gitStatus(projectRoot);
+    const allChanged = gitStatus(projectRoot).filter(p => !p.startsWith('.tasks/'));
     gitAdd(projectRoot, allChanged);
 
     const commitMsg = cfg.commitMessage({
-      scope: scopeName, module: moduleName, desc: target.desc, version,
+      id: target.id, scope: scopeName, module: moduleName, desc: target.desc, summary, version,
     });
     gitCommit(projectRoot, commitMsg);
     const commitHash = gitRevParseHead(projectRoot);
@@ -270,6 +339,7 @@ module.exports = async function done(projectRoot, args) {
       logger,
       projectRoot,
       target.id,
+      { summary, oldNote: target.note },
     );
   }
 };

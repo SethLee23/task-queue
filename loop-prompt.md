@@ -4,6 +4,16 @@
 
 你正在 `${PROJECT_ROOT}` 项目执行任务循环。每次唤醒严格按以下步骤：
 
+## 唤醒触发
+
+下面任一情况发生时都要从 Step 0 开始走一遍完整流程：
+
+1. **ScheduleWakeup 定时唤醒**（Step 5 自己安排的）
+2. **用户输入"扫一下"/"扫一下任务表"/"再扫一下"/等价短句** —— dashboard ⚡ 立即执行按钮在 tmux 启动的 loop 上就是通过 send-keys 把"扫一下"注入到这里;手动在 terminal 敲也算
+3. **wake-now 旗子被发现存在**（见 Step 0.5;非 tmux 启动时面板 ⚡ 走这条路)
+
+不管哪种触发,Step 0 → Step 5 一轮跑完。不要把 (2) 当对话消息回复"好的我马上扫一下",**直接进 Step 0**。
+
 ## 准备
 
 读 `${PROJECT_ROOT}/.tasks/project.config.js`（必要时）。所有 CLI 命令前缀：
@@ -47,7 +57,7 @@ node ~/.claude/skills/task-queue/tasks.cjs status ${PROJECT_ROOT}
 - 记下 `idleSleepSeconds`（Step 5 用，默认 270；范围 [60, 3600]）
 - 记下 `counts.desiredModel`（Step 2 派发用，默认 `opus`）
 
-设计意图：面板的 pause 只影响"取下一条"，不打断已派发的 subagent；wake-now 仅消费旗子，实际响应延迟由 idleSleepSeconds 控制。
+设计意图：面板的 pause 只影响"取下一条"，不打断已派发的 subagent；wake-now 旗子仅在非 tmux 启动时使用,响应延迟 ≤ idleSleepSeconds;tmux 启动时面板 ⚡ 走 send-keys 直接注入"扫一下"到 stdin,~1s 响应,跳过 wake-now 旗子。
 
 ## Step 1: 取下一条任务
 
@@ -172,6 +182,32 @@ node ~/.claude/skills/task-queue/tasks.cjs heartbeat ${PROJECT_ROOT} --model <cl
 ```
 
 这条覆盖主 loop 的 opus 上报，dashboard 显示的就是子任务实际执行模型。
+
+### S2.5. 拆解 / 推进 checklist（可选但强烈推荐）
+
+claim 返回的 JSON 含 `checklist` 字段（JSON 字符串，可能为空）。用于让用户在 dashboard 卡片上看到你打算做什么、做到哪步。
+
+**checklist 为空**：先把任务拆成 2-6 步可勾选的子任务，写入：
+
+```
+node ~/.claude/skills/task-queue/tasks.cjs set-checklist ${PROJECT_ROOT} <id> "step1|step2|step3"
+```
+
+拆解原则：
+- 拆细到"勾掉一项 = 完成一段可独立验证的工作"
+- 描述短句即可（≤20 字），用户扫一眼能知道你在干啥
+- 太琐碎的任务（"改一行注释"这种）可以跳过本步，不拆
+
+**checklist 非空**：说明上一轮没干完。读 `checklist` JSON，找到第一个 `done: false` 的项 = 你这一轮要干的事。
+
+**任务执行期间**：
+- 干完一步立刻 `tick-checklist ${PROJECT_ROOT} <id> <1-based-index>`
+- 干到一半发现要补步骤：`add-checklist ${PROJECT_ROOT} <id> "新步骤"`
+- 发现某步不需要做了：`del-checklist ${PROJECT_ROOT} <id> <index>`
+
+向后兼容：**任务的 checklist 不是必需的**。完全跳过 S2.5 直接干 S3 也合法（老任务、琐碎任务都这么走）。但拆过 checklist 的任务，干完要把所有项都 tick 完，否则 dashboard 上会显示"还差几项"造成误导。
+
+**强制护栏**：如果 checklist 有未勾项时调 `done`，命令会**自动拒绝并把任务回退到 TODO**（note 顶部加 `[done 被拒]` 块保留你的 summary），下一轮 loop 重新派发让你从首个未勾项续做。不要尝试用"全部完成"的 summary 绕过——子项没勾就是没勾。正确做法：要么按顺序 tick 完所有项再 done，要么如果某项确实不需要做，先 `del-checklist` 删掉它再 done。
 
 ### S3. 执行任务
 

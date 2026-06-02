@@ -47,7 +47,31 @@ test('POST skip 把 待办 改为 跳过', async () => {
   assert.equal(rows[0].status, '跳过');
 });
 
-test('POST skip 非 待办 → 409', async () => {
+test('POST skip 把 待 review 改为 跳过', async () => {
+  const proj = await mkProj([
+    { id: 10, desc: 'r', scope: 'web', priority: '中', status: '已完成-待review' },
+  ]);
+  const entry = registryAdd(proj);
+  if (!inst) inst = await startServer({ port: 0 });
+  const res = await postJson(`http://127.0.0.1:${inst.port}/api/projects/${entry.slug}/skip`, { id: 10 });
+  assert.equal(res.status, 200);
+  const rows = await readRows(path.join(proj, '.tasks', 'tasks.xlsx'), SHEET_IN_PROGRESS);
+  assert.equal(rows[0].status, '跳过');
+});
+
+test('POST skip 把 阻塞 改为 跳过', async () => {
+  const proj = await mkProj([
+    { id: 11, desc: 'b', scope: 'web', priority: '中', status: '阻塞-等答疑' },
+  ]);
+  const entry = registryAdd(proj);
+  if (!inst) inst = await startServer({ port: 0 });
+  const res = await postJson(`http://127.0.0.1:${inst.port}/api/projects/${entry.slug}/skip`, { id: 11 });
+  assert.equal(res.status, 200);
+  const rows = await readRows(path.join(proj, '.tasks', 'tasks.xlsx'), SHEET_IN_PROGRESS);
+  assert.equal(rows[0].status, '跳过');
+});
+
+test('POST skip 进行中 → 409（loop 正在跑不能抢）', async () => {
   const proj = await mkProj([
     { id: 2, desc: 'b', scope: 'web', priority: '中', status: '进行中' },
   ]);

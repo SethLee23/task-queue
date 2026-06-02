@@ -25,7 +25,7 @@ function mkProject() {
   return proj;
 }
 
-test('GET /api/projects/:slug/loop-command 返回完整命令 + 替换好 ${PROJECT_ROOT}', async () => {
+test('GET /api/projects/:slug/loop-command 返回 tmux 三段命令 + 替换好 ${PROJECT_ROOT}', async () => {
   const proj = mkProject();
   const entry = registryAdd(proj);
   if (!inst) inst = await startServer({ port: 0 });
@@ -35,16 +35,38 @@ test('GET /api/projects/:slug/loop-command 返回完整命令 + 替换好 ${PROJ
   const body = await res.json();
   assert.equal(typeof body.command, 'string');
   assert.equal(body.projectRoot, proj);
+  assert.equal(body.sessionName, `task-queue-loop-${entry.slug}`);
 
-  // 必须以 cd 开头并包含 claude '/loop
-  assert.ok(body.command.startsWith(`cd '`), '应当以 cd ' + "'" + ' 开头');
-  assert.ok(body.command.includes(` && claude --dangerously-skip-permissions '/loop `), '应当包含 && claude --dangerously-skip-permissions /loop 段');
+  // 顶部以 SESSION 变量开始
+  assert.ok(body.command.startsWith(`SESSION='task-queue-loop-${entry.slug}'`),
+    '应以 SESSION 变量定义开头');
+
+  // 必须包含 tmux 三件套
+  assert.ok(body.command.includes('tmux new-session -ds "$SESSION"'),
+    '应包含 tmux new-session -ds');
+  assert.ok(body.command.includes('tmux send-keys -t "$SESSION"'),
+    '应包含 tmux send-keys');
+  assert.ok(body.command.includes('tmux attach -t "$SESSION"'),
+    '应包含 tmux attach');
+
+  // claude + /loop 走 send-keys 串里
+  assert.ok(body.command.includes('claude --dangerously-skip-permissions'),
+    '应包含 claude --dangerously-skip-permissions');
+  assert.ok(body.command.includes('/loop'), '应包含 /loop');
+
+  // prompt 通过 heredoc 落到 TMPDIR 文件，避免 send-keys 嵌套引号
+  assert.ok(body.command.includes(`PROMPT_FILE="\${TMPDIR:-/tmp}/tq-loop-${entry.slug}.prompt"`),
+    '应定义 PROMPT_FILE 变量');
+  assert.ok(body.command.includes(`<<'TQ_PROMPT_END'`),
+    '应以引号定界 heredoc 写 prompt');
+  assert.ok(body.command.includes('\nTQ_PROMPT_END\n'),
+    '应有 heredoc 闭合行');
 
   // PROJECT_ROOT 占位符必须已经被替换
   assert.ok(!body.command.includes('${PROJECT_ROOT}'), 'PROJECT_ROOT 应被替换');
 
-  // 项目路径应在命令中（单引号包裹）
-  assert.ok(body.command.includes(`'${proj}'`), '项目路径应单引号出现在命令中');
+  // 项目路径应以 -c '<path>' 形式出现在 new-session 行
+  assert.ok(body.command.includes(`-c '${proj}'`), 'new-session 应带 -c <root>');
 });
 
 test("GET /loop-command 项目路径含单引号时正确转义", async () => {

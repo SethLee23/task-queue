@@ -3,16 +3,45 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-  <title>task-queue dashboard</title>
+  <title>Helm</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,500;6..72,600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
   <div id="app">
     <aside id="sidebar">
       <div class="sidebar-header">
-        <h1>task-queue</h1>
+        <h1 class="brand">
+          <svg class="brand-svg" viewBox="0 0 120 30" width="120" height="30" aria-label="Helm Task Console" role="img">
+            <!-- 舵盘:6 辐条,放大到 r=7.5 / 外延 r=11,中心 (15,15) -->
+            <g class="brand-helm" fill="none" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="15" cy="15" r="7.5"/>
+              <circle cx="15" cy="15" r="2.2" stroke="none" class="brand-helm-dot"/>
+              <!-- 6 根舵把 -->
+              <line x1="15" y1="7.5" x2="15" y2="4"/>
+              <line x1="21.5" y1="11.25" x2="24.5" y2="9.5"/>
+              <line x1="21.5" y1="18.75" x2="24.5" y2="20.5"/>
+              <line x1="15" y1="22.5" x2="15" y2="26"/>
+              <line x1="8.5" y1="18.75" x2="5.5" y2="20.5"/>
+              <line x1="8.5" y1="11.25" x2="5.5" y2="9.5"/>
+            </g>
+            <!-- 主标:Helm —— 文字视觉重心对齐图标中心 (y=15) -->
+            <text class="brand-wordmark" x="33" y="12"
+                  dominant-baseline="central" text-anchor="start"
+                  font-family="Newsreader, Georgia, 'Source Han Serif SC', serif"
+                  font-size="17" font-weight="700" letter-spacing="0.3">Helm</text>
+            <!-- 副标:TASK CONSOLE -->
+            <text class="brand-subtitle" x="33" y="23"
+                  dominant-baseline="central" text-anchor="start"
+                  font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif"
+                  font-size="6.5" font-weight="500" letter-spacing="1.4">TASK CONSOLE</text>
+          </svg>
+        </h1>
         <button id="theme-toggle" class="btn-icon" title="切换主题">🌙</button>
       </div>
+      <div class="brand-divider"></div>
       <div id="project-list">加载中...</div>
     </aside>
     <main id="detail">
@@ -21,6 +50,7 @@
     </main>
   </div>
   <script src="/linkify.js"></script>
+  <script src="/note-blocks.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

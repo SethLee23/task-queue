@@ -6,6 +6,8 @@
   --text: #e4e6eb;
   --text-dim: #8b929e;
   --accent: #4ea1f7;
+  --accent-soft: rgba(78, 161, 247, 0.12);
+  --accent-mid: rgba(78, 161, 247, 0.22);
   --green: #56c47b;
   --yellow: #f5b948;
   --red: #e85d5d;
@@ -20,6 +22,8 @@
   --text: #3d3a32;
   --text-dim: #807a6a;
   --accent: #a8742c;
+  --accent-soft: rgba(168, 116, 44, 0.10);
+  --accent-mid: rgba(168, 116, 44, 0.20);
   --green: #6b8e4e;
   --yellow: #b88a2a;
   --red: #b8533a;
@@ -49,11 +53,9 @@ body {
   flex-shrink: 0;
 }
 #sidebar h1 {
-  font-size: 13px;
-  margin: 8px 8px 12px;
-  color: var(--text-dim);
-  font-weight: 500;
-  letter-spacing: 0.5px;
+  margin: 6px 8px 4px;
+  font-size: 0;
+  line-height: 0;
 }
 .sidebar-header {
   display: flex;
@@ -61,7 +63,33 @@ body {
   justify-content: space-between;
   padding-right: 4px;
 }
-.sidebar-header h1 { margin: 8px 8px 12px; flex: 1; }
+.sidebar-header h1 { margin: 6px 8px 4px; flex: 1; }
+.brand {
+  display: inline-flex;
+  align-items: center;
+}
+.brand-svg {
+  display: block;
+  font-feature-settings: "kern", "ss01";
+}
+.brand-helm {
+  stroke: var(--accent);
+  stroke-width: 1.4;
+}
+.brand-helm-dot {
+  fill: var(--accent);
+}
+.brand-wordmark {
+  fill: var(--text);
+}
+.brand-subtitle {
+  fill: var(--text-dim);
+}
+.brand-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 12px 8px 14px;
+}
 .btn-icon {
   background: transparent;
   border: 1px solid var(--border);
@@ -87,11 +115,68 @@ body {
   border-radius: 5px;
   cursor: pointer;
   margin-bottom: 2px;
+  position: relative;
 }
 .project-item:hover { background: var(--panel); }
 .project-item.active { background: var(--panel); }
 .project-item .name { font-weight: 500; }
 .project-item .summary { color: var(--text-dim); font-size: 11px; margin-top: 2px; }
+
+.project-item .hide-btn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  font-size: 14px;
+  line-height: 1;
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity .15s, color .15s;
+  border-radius: 3px;
+}
+.project-item:hover .hide-btn { opacity: 0.8; }
+.project-item .hide-btn:hover { opacity: 1; color: var(--text); background: var(--border); }
+
+.hidden-section {
+  margin: 10px 8px 0;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+  font-size: 11px;
+}
+.hidden-toggle {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  padding: 4px 6px;
+  font-size: 11px;
+  font-family: inherit;
+}
+.hidden-toggle:hover { color: var(--text); }
+.hidden-list { margin-top: 4px; }
+.hidden-list .project-item.dim {
+  opacity: 0.65;
+  cursor: default;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 6px 8px;
+}
+.hidden-list .project-item.dim:hover { background: transparent; }
+.hidden-list .show-btn {
+  padding: 2px 8px;
+  font-size: 10px;
+  flex-shrink: 0;
+}
 
 .hidden-hint {
   margin: 12px 10px 0;
@@ -518,7 +603,9 @@ a.linkified:hover { text-decoration: underline; }
   display: flex;
   gap: 4px;
   margin-top: 8px;
+  flex-wrap: wrap;
 }
+.card-actions .btn { white-space: nowrap; }
 .btn {
   background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
   border-radius: 3px; padding: 3px 8px; font-size: 11px; cursor: pointer;
@@ -665,6 +752,7 @@ a.linkified:hover { text-decoration: underline; }
   padding-bottom: 10px;
   border-bottom: 1px solid var(--border);
   margin-bottom: 12px;
+  flex-shrink: 0;
 }
 .card-detail-title {
   font-size: 16px;
@@ -830,6 +918,7 @@ a.linkified:hover { text-decoration: underline; }
   margin-top: 12px;
   padding-top: 10px;
   border-top: 1px solid var(--border);
+  flex-shrink: 0;
 }
 .modal {
   background: var(--panel);
@@ -1250,5 +1339,45 @@ a.linkified:hover { text-decoration: underline; }
   /* 按钮的最小触摸区 */
   .btn { min-height: 36px; }
   .btn-icon { width: 36px; height: 36px; }
+}
+
+/* ⚡ 立即执行 / 其他动作的非阻塞 toast (右下角栈) */
+#toast-stack {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 9999;
+  pointer-events: none;
+}
+.toast {
+  min-width: 240px;
+  max-width: 380px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.32);
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity 0.18s ease, transform 0.18s ease;
+  pointer-events: auto;
+  cursor: pointer;
+}
+.toast.toast-in { opacity: 1; transform: translateY(0); }
+.toast.toast-out { opacity: 0; transform: translateY(8px); }
+.toast-info { border-left: 3px solid var(--accent); }
+.toast-success { border-left: 3px solid var(--green); }
+.toast-warn { border-left: 3px solid var(--yellow); }
+.toast-error { border-left: 3px solid var(--red); }
+
+@media (max-width: 720px) {
+  #toast-stack { right: 8px; bottom: 8px; left: 8px; }
+  .toast { min-width: 0; max-width: 100%; font-size: 14px; }
 }
 

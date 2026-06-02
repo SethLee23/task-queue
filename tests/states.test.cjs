@@ -24,6 +24,7 @@ test('canTransition 合法转换返回 true', () => {
   assert.equal(canTransition('已完成-待review', '已完成'), true);
   assert.equal(canTransition('已完成-待review', '跳过'), true);
   assert.equal(canTransition('阻塞-等答疑', '待办'), true);
+  assert.equal(canTransition('阻塞-等答疑', '已完成'), true); // mark-done 用
   assert.equal(canTransition('进行中', '待办'), true); // recover 用
 });
 
