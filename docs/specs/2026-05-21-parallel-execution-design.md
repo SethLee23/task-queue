@@ -2,7 +2,7 @@
 
 - 日期:2026-05-21
 - 作者:Claude(brainstorming with Seth)
-- 状态:草案(待用户复核 → 转 writing-plans)
+- 状态:已被取代 → 见 2026-06-03-parallel-execution-v2-design.md
 
 ## 背景
 
