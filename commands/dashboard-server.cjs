@@ -853,6 +853,7 @@ async function aggregateProject(entry) {
       wakeNow: false,
       wakeNowReason: null,
       counts: { todo: 0, in_progress: 0, review: 0, blocked: 0, done_today: 0 },
+      currentTaskIds: [],
       currentTask: null,
       lastFinished: null,
     };
@@ -898,6 +899,9 @@ async function aggregateProject(entry) {
     ? { id: hb.lastFinishedId, at: hb.lastFinishedAt }
     : null;
 
+  // currentTaskIds: readHeartbeat already upgrades old schema (currentTaskId→[id])
+  const currentTaskIds = hb ? (hb.currentTaskIds ?? []) : [];
+
   return {
     ...entry,
     online: deriveOnline(root, hb),
@@ -909,6 +913,7 @@ async function aggregateProject(entry) {
     wakeNow: wakeReason !== null,
     wakeNowReason: wakeReason,
     counts,
+    currentTaskIds,
     currentTask,
     lastFinished,
   };

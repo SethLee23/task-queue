@@ -1052,14 +1052,26 @@ function renderDetail() {
   ));
 
   if (p.currentTask) {
-    c.appendChild(el('div', { className: 'current-task' },
-      el('div', { className: 'label' }, '正在执行'),
-      el('div', { className: 'title' }, `#${p.currentTask.id} ${p.currentTask.desc}`),
-      el('div', { className: 'tags' },
-        el('span', { className: 'chip' }, p.currentTask.scope ?? '—'),
-        el('span', { className: `chip prio-${p.currentTask.priority || '中'}` }, p.currentTask.priority ?? '—'),
-      ),
-    ));
+    const isParallel = Array.isArray(p.currentTaskIds) && p.currentTaskIds.length > 1;
+    if (isParallel) {
+      // Split composite desc "#7 a ｜ #9 b" into individual lines
+      const lines = (p.currentTask.desc || '').split(' ｜ ').map(s => s.trim()).filter(Boolean);
+      c.appendChild(el('div', { className: 'current-task' },
+        el('div', { className: 'label' }, `正在并行执行 (${p.currentTaskIds.length} 任务)`),
+        el('div', { className: 'parallel-tasks' },
+          ...lines.map(line => el('div', { className: 'title' }, line)),
+        ),
+      ));
+    } else {
+      c.appendChild(el('div', { className: 'current-task' },
+        el('div', { className: 'label' }, '正在执行'),
+        el('div', { className: 'title' }, `#${p.currentTask.id} ${p.currentTask.desc}`),
+        el('div', { className: 'tags' },
+          el('span', { className: 'chip' }, p.currentTask.scope ?? '—'),
+          el('span', { className: `chip prio-${p.currentTask.priority || '中'}` }, p.currentTask.priority ?? '—'),
+        ),
+      ));
+    }
   }
 
   c.appendChild(renderKanbanSection(tasks));
