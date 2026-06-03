@@ -1,6 +1,7 @@
 'use strict';
 
 const path = require('node:path');
+const { execFileSync } = require('node:child_process');
 const {
   readRows, withWorkbook, SHEET_IN_PROGRESS, colIndex,
 } = require('../lib/workbook.cjs');
@@ -10,6 +11,7 @@ const { Logger } = require('../lib/logger.cjs');
 const { writeHeartbeat } = require('../lib/heartbeat.cjs');
 const { localTimestamp } = require('../lib/datetime.cjs');
 const { parseChecklist, summarize } = require('../lib/checklist.cjs');
+const { gitStatus } = require('../lib/git.cjs');
 const {
   buildDoneBlock, prependDoneBlock, transitionToReview, commitAndArchive,
 } = require('../lib/done-core.cjs');
@@ -64,6 +66,7 @@ module.exports = async function done(projectRoot, args) {
   const idArg = args[0];
   if (!idArg) throw new Error('done 需要 id 参数');
   const summary = args[1];
+  const expectClean = args.includes('--expect-clean');
 
   const xlsxPath = path.join(projectRoot, '.tasks', 'tasks.xlsx');
   const cfg = loadProjectConfig(projectRoot);
@@ -122,6 +125,31 @@ module.exports = async function done(projectRoot, args) {
       { summary, oldNote: target.note },
     );
     return;
+  }
+
+  // non-code lane 护栏:声称不改文件的任务,仓库必须干净;脏 → 还原 tracked + review,绝不 commit
+  if (expectClean) {
+    const dirty = gitStatus(projectRoot).filter(p => !p.startsWith('.tasks/'));
+    if (dirty.length > 0) {
+      const restored = [];
+      const untracked = [];
+      for (const f of dirty) {
+        try {
+          execFileSync('git', ['checkout', '--', f], { cwd: projectRoot, stdio: ['ignore', 'pipe', 'pipe'] });
+          restored.push(f);
+        } catch (_) {
+          untracked.push(f);
+        }
+      }
+      await transitionToReview(
+        xlsxPath, target._rowNumber,
+        `non-code 任务不应改仓库文件。已还原: ${restored.join(', ') || '无'};`
+        + `未删的新增文件: ${untracked.join(', ') || '无'}。`
+        + '若该任务确需改代码,请 reply 说明后重开为 code lane。',
+        logger, projectRoot, target.id, { summary, oldNote: target.note },
+      );
+      return;
+    }
   }
 
   const result = await commitAndArchive({ projectRoot, xlsxPath, target, cfg, scopeName, summary, logger });
