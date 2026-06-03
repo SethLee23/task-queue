@@ -1,6 +1,6 @@
 # task-queue loop 流程
 
-**主 loop 固定运行在 Opus**（启动时由 `/loop` 决定的模型，dashboard 上切的"执行模型"切的是 worker 子任务，不影响主 loop 自身）。每条任务都通过 Agent 工具派发给独立 subagent 实际执行，主 loop 只做调度。
+**主 loop 固定运行在 Opus**（启动时由 `/loop` 决定的模型，dashboard 上切的"执行模型"切的是 worker 子任务，不影响主 loop 自身）。每条任务都通过 Agent 工具派发给独立 subagent 实际执行，主 loop 只做调度。串行模式每次派发单条任务；当 `project.config.js` 启用 `parallel.enabled=true` 时进入并行模式，一轮可同时派发多条任务。
 
 你正在 `${PROJECT_ROOT}` 项目执行任务循环。每次唤醒严格按以下步骤：
 
@@ -59,7 +59,11 @@ node ~/.claude/skills/task-queue/tasks.cjs status ${PROJECT_ROOT}
 
 设计意图：面板的 pause 只影响"取下一条"，不打断已派发的 subagent；wake-now 旗子仅在非 tmux 启动时使用,响应延迟 ≤ idleSleepSeconds;tmux 启动时面板 ⚡ 走 send-keys 直接注入"扫一下"到 stdin,~1s 响应,跳过 wake-now 旗子。
 
-## Step 1: 取下一条任务
+## Step 1: 取任务(串行 / 并行分流)
+
+读 `.tasks/project.config.js` 的 `parallel.enabled`:
+
+### Step 1a: 串行模式(parallel.enabled=false / 字段缺失)
 
 ```
 node ~/.claude/skills/task-queue/tasks.cjs next ${PROJECT_ROOT}
@@ -69,6 +73,36 @@ node ~/.claude/skills/task-queue/tasks.cjs next ${PROJECT_ROOT}
 - 输出 JSON `{id, desc, scope, priority, note, model, ...}` → 进入 Step 2
 
 `model` 字段是**任务级模型覆盖**：非空时优先级高于项目级 `desiredModel`；空字符串表示回退项目级。
+
+### Step 1b: 并行模式(parallel.enabled=true)
+
+```
+node ~/.claude/skills/task-queue/tasks.cjs plan-batch ${PROJECT_ROOT}
+```
+
+输出 `{candidates, scopeMutex, maxConcurrency, allowSameScope}`。
+
+- `candidates` 空 → 跳到 Step 5
+- `candidates` 只有 1 条 → 退回 Step 1a 串行路径处理这 1 条(不值得开 worktree)
+- ≥ 2 条 → 你自己做编排(不调外部命令):
+
+**编排规则:**
+
+1. **标 lane**:每条候选判定 `code`(desc 涉及改代码/改仓库文件)或 `non-code`(调研/问答/分析,无需改文件)。拿不准一律 code。note 顶部含 `[needs-code` 标记的强制 code。
+2. **scope 互斥**:`scopeMutex` 里的 pair 默认不同批;`allowSameScope=true` 时,若两条 desc 明显改不同文件/目录可同批。non-code 不占 scope 互斥。
+3. note 含 "依赖 #N" 且 #N 不在本批 → 推迟。
+4. 总数 ≤ `maxConcurrency`。
+
+输出一行编排理由(日志复盘用),例:
+> 本轮并行 #7(code) #9(code) #11(non-code),理由:7/9 跨目录,11 纯调研
+
+然后:
+
+```
+node ~/.claude/skills/task-queue/tasks.cjs claim-batch ${PROJECT_ROOT} <id1> <id2> ...
+```
+
+→ 进入 Step 2b。
 
 ## Step 2: 派发 subagent 执行任务
 
@@ -104,11 +138,54 @@ node ~/.claude/skills/task-queue/tasks.cjs block ${PROJECT_ROOT} <id> "subagent 
 
 并按 Step 4 推送两通道通知。
 
-## Step 3: 处理 subagent 返回
+## Step 3: 处理 subagent 返回(并行模式见 Step 3b)
 
 subagent 已自行 claim / heartbeat / 执行 / done|review|block / 推送通知。主 loop 收到的最后一行格式为 `STATUS: done|review|block`，**仅作日志确认**，不要重复调结束命令、不要重复推送。
 
-## Step 4: 推送通知（仅派发失败时由主 loop 发）
+## Step 2b(并行模式): 建 worktree + 并发派 worker
+
+**对每条 code 任务**先建 worktree(主 loop 跑):
+
+```
+node ~/.claude/skills/task-queue/tasks.cjs worktree-create ${PROJECT_ROOT} <id>
+```
+
+失败(报"已存在"以外的错)→ 该任务按串行 Step 2 的派发失败处理(claim 已完成,直接 block)。
+
+然后**同一条 message 里**为每条任务发一个 Agent 调用(并发 tool_use),`model` = task.model || desiredModel:
+
+- code 任务 → prompt 用本文件末尾 **## Parallel Code Worker 模式** 模板,填入 PROJECT_ROOT / TASK_ID / WORKTREE 路径 / 任务 desc / scope
+- non-code 任务 → prompt 用 **## Non-code Worker 模式** 模板,填入 PROJECT_ROOT / TASK_ID / 任务 desc
+
+## Step 3b(并行模式): 收 worker 返回,收尾
+
+worker 返回顺序不定,**non-code 先回先归档,不等 code**。
+
+**non-code worker 返回:**
+
+- 末行 `STATUS: done` → `node ~/.claude/skills/task-queue/tasks.cjs done ${PROJECT_ROOT} <id> "<返回正文(完整答案)>" --expect-clean`
+  - 命令把脏仓库自动还原+转 review,你无需自查 git status
+- 末行 `STATUS: needs-code` →
+  - 该任务 note 里**已有** `[needs-code` 标记(claim-batch 输出的 note 里看)→ 二次回流,`review <id> "二次 needs-code,请人工拆解: <worker 说明前 100 字>"`
+  - 否则 → `requeue ${PROJECT_ROOT} <id> "<worker 说明前 200 字>"`(下一轮强制 code lane)
+- 末行 `STATUS: block` / 无 STATUS 行 → `block <id> "<原因>"`
+
+**code worker 全部返回后,按返回顺序逐条串行:**
+
+- 末行 `STATUS: done`(worker 已跑过 done-in-worktree 且 ok:true)→
+  ```
+  node ~/.claude/skills/task-queue/tasks.cjs merge-task ${PROJECT_ROOT} <id> "<worker 返回的 summary>"
+  ```
+  - `{ok:true}` → 完成,worktree 已清
+  - `{ok:false}` → 已自动转 review,worktree 保留,**不要重试**
+- 末行 `STATUS: review` → `review <id> "<worker 给的风险>"`(worktree 保留)
+- 末行 `STATUS: block` / Agent 调用失败 / 无 STATUS 行 → `block <id> "<原因前 200 字>"`(worktree 保留)
+
+**每条任务收尾后立刻双通道推送**(同串行 S5 文案格式):PushNotification + test-push。
+
+全部收尾后 → Step 5。
+
+## Step 4: 推送通知（仅派发失败时由主 loop 发）(并行模式见 Step 3b)
 
 正常路径下 subagent 自己推了。只在 Step 2 末尾派发失败时由主 loop 发：
 
@@ -317,3 +394,42 @@ STATUS: block
 ```
 
 主 loop 用这行判断派发是否成功；没有这行视为派发失败。
+
+---
+
+## Parallel Code Worker 模式
+
+**仅当主 loop 以并行模式派发你执行单条 code 任务时按本节执行。** prompt 顶部有 `PROJECT_ROOT=` / `TASK_ID=` / `WORKTREE=`(形如 `<root>/.tasks/worktrees/task-N`)三行。
+
+1. **只在 WORKTREE 目录内工作**。读代码、改代码都以 WORKTREE 为根。
+2. 按任务 desc 执行;严守 scope、CLAUDE.md 规范、S3 同款安全护栏。
+3. 改完在 WORKTREE 内跑 `buildCommands[scope]` 验证;失败重试 1 次,仍败 → 不 commit,直接返回。
+4. build 通过 → `node ~/.claude/skills/task-queue/tasks.cjs done-in-worktree ${PROJECT_ROOT} ${TASK_ID}`
+   - 输出 `ok:true` → 成功;`ok:false`(改了依赖文件)→ 按失败返回,reason 写进返回正文
+
+**与串行 Subagent 模式的区别(重要,全部禁止):**
+- ❌ claim / done / review / block / mark-done(主 loop 管 Excel)
+- ❌ set-checklist / tick-checklist 等 checklist 命令
+- ❌ heartbeat 上报
+- ❌ PushNotification / test-push(主 loop 统一推)
+- ❌ 触碰主仓库工作区(${PROJECT_ROOT} 下 WORKTREE 之外的文件)
+- ❌ 改 package.json / 任何锁文件
+
+**返回格式:**
+- 正文 = 1-2 句 summary(改了什么/关键决策,主 loop 直接用作 commit 归档的 summary)
+- 失败时正文 = 原因(风险或疑问)
+- 最后一行三选一:`STATUS: done` / `STATUS: review` / `STATUS: block`
+
+## Non-code Worker 模式
+
+**仅当主 loop 以并行模式派发你执行单条 non-code 任务时按本节执行。** prompt 顶部有 `PROJECT_ROOT=` / `TASK_ID=` 两行。
+
+1. 在主仓库内**只读**:可以读代码/文档/git log,可以联网调研。
+2. **禁止改任何 git 跟踪文件,禁止 commit**。Excel/checklist/heartbeat/推送同样禁止(主 loop 管)。
+3. 产出:
+   - 篇幅长(> 30 行)→ 写 `${PROJECT_ROOT}/.tasks/reports/task-${TASK_ID}.md`(目录不存在先 mkdir -p),返回正文给摘要 + 报告路径
+   - 篇幅短 → 直接写在返回正文
+   - 返回正文会被主 loop 原样用作 done summary(dashboard 完成区展示),按"回答型任务"标准放开写
+4. **执行中发现其实需要改代码** → 什么都不要改,返回正文写清楚要改什么/为什么,最后一行 `STATUS: needs-code`
+
+**返回格式:** 最后一行三选一:`STATUS: done` / `STATUS: needs-code` / `STATUS: block`
