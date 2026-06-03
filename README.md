@@ -11,6 +11,7 @@
 - 你脑子里攒了 20 条琐碎需求（修 bug / 调样式 / 改文案），手敲又懒、丢着又忘。
 - 在 `.tasks/tasks.xlsx` 里加几行，Claude 自己读、自己做、自己 commit，每 15–60 分钟扫一次。
 - 多个项目并行跑 loop？打开 `http://127.0.0.1:5732` 一眼看清"谁在跑哪条、谁阻塞了、谁今天做完几条"。
+- 互不相干的多条任务？开启并行模式（`parallel.enabled: true`），一轮 /loop 并发派多个 subagent，code 任务进独立 worktree，non-code 任务直接归档，吞吐成倍提升。
 
 ## 核心机制
 

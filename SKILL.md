@@ -151,7 +151,7 @@ node ~/.claude/skills/task-queue/tasks.cjs add-row /path/proj "登录按钮没�
 | `test-push [message]` | 触发 macOS 原生桌面通知，绕过 Claude 60s 反打扰；用于随时测试通道 |
 | `next <root>` | 输出下一条待办（按优先级排序） |
 | `claim <root> <id\|auto>` | 状态置进行中 |
-| `done <root> <id> [summary]` | 标完成 + summary 落 note 顶部(dashboard 完成区显示),根据 config 决定 auto commit |
+| `done <root> <id> [summary] [--expect-clean]` | 标完成 + summary 落 note 顶部(dashboard 完成区显示),根据 config 决定 auto commit；`--expect-clean` 供 non-code lane 用（跳过 dirty-tree 警告） |
 | `review <root> <id> "<风险>"` | 标待 review |
 | `block <root> <id> "<疑问>"` | 标阻塞 |
 | `mark-done <root> <id> "<说明>"` | 把 待review/阻塞 任务手动标记为已完成并归档（不 commit；说明落 note 顶部） |
@@ -161,6 +161,14 @@ node ~/.claude/skills/task-queue/tasks.cjs add-row /path/proj "登录按钮没�
 | `clear-wake <root>` | 清除 wake-now 旗子（loop 在 Step 0.5 自动调，正常流程不需要手动用） |
 | `dashboard [serve\|register\|unregister\|list] [--port 5732] [--host 127.0.0.1]` | 启动本地 Web 面板 / 管理注册表 |
 | `heartbeat <root> [--phase <executing\|idle\|sleeping>]` | 兜底手工写心跳（claim/done 等已自动写，正常流程不需要调） |
+| `plan-batch <root> [--limit N]` | 并行模式输出候选 + scope 互斥提示供主 Claude 编排 |
+| `claim-batch <root> <id...>` | 原子批量 claim 多条任务 |
+| `worktree-create <root> <id>` | 为任务建 git worktree（task-N 分支 + symlink node_modules） |
+| `worktree-list <root>` | 列出当前 worktree 及分支 merge 状态 |
+| `worktree-discard <root> <id>` | 强制销毁 worktree + 分支 |
+| `done-in-worktree <root> <id>` | code worker 在 worktree 内 WIP commit（禁改依赖） |
+| `merge-task <root> <id> <summary>` | 主 loop 串行 merge task 分支回 base |
+| `requeue <root> <id> <reason>` | needs-code 回流：进行中→待办 + [needs-code] 标记 |
 
 ## 必读约束
 
@@ -170,6 +178,7 @@ node ~/.claude/skills/task-queue/tasks.cjs add-row /path/proj "登录按钮没�
 - 必须在 Step 0 跑 recover
 - 严守 CLAUDE.md 项目规范
 - 安全护栏：禁 push / 禁 reset --hard / 禁 --no-verify / 禁触 scope 外目录
+- 并行模式下 worker subagent 禁碰 Excel/heartbeat/推送（主 loop 统一管）；code worker 只在 worktree 内 commit，merge 由主 loop 串行做；合并失败/冲突 → 转 review 并保留 worktree；人工回路：`merge-task <id> <summary>` 重试，`worktree-discard <id>` 放弃
 
 ## §dashboard 流程
 
@@ -212,3 +221,39 @@ node ~/.claude/skills/task-queue/tasks.cjs dashboard register /path/to/project
 ### 安全
 
 默认仅监听 loopback。若需局域网访问：`--host 0.0.0.0`，但无认证，请勿暴露公网。
+
+## §parallel 并行执行
+
+一轮 /loop 可并发派多个 subagent，显著提升多条互不相干任务的吞吐。
+
+### 开启
+
+`.tasks/project.config.js` 的 `parallel` 字段（新 init 项目默认开启；存量项目缺字段 = 关闭，纯串行不变）：
+
+```js
+parallel: {
+  enabled: true,        // 总开关
+  maxConcurrency: 3,    // 一轮最多并发几个 subagent
+  allowSameScope: true, // 同 scope 任务是否允许并行(由主 Claude 判 desc 文件不重叠)
+}
+```
+
+### 两条 lane
+
+- **code 任务**（改代码/仓库文件）：每条进独立 git worktree（`task-N` 分支，node_modules symlink 共享），worker 改完 commit 到分支，主 loop 串行 ff/rebase merge 回 base。冲突 → 转 review 保留 worktree。
+- **non-code 任务**（调研/问答/分析）：不开 worktree，只读主仓库，产出写 `.tasks/reports/` 或直接回正文，返回即归档（不产生 commit）。
+
+### 一轮最多几个
+
+`maxConcurrency`（默认 3）是硬上限；code 任务还受 scope 互斥（`allowSameScope=false` 时每 scope 一轮最多 1 条）。non-code 不占 scope 互斥。
+
+### 成本与限制
+
+- 每个并发 subagent = 一份独立 token 消耗 + 一次独立 build，maxConcurrency 调大需自担机器/token 压力。
+- 并行模式禁止改依赖文件（package.json/锁文件）—— done-in-worktree 会拒绝；真要改依赖临时关 parallel 走串行。
+- 单 scope 项目若 `allowSameScope=false`，code 任务退化串行（推荐配置默认 true）。
+
+### 人工回路
+
+- merge 冲突的任务转 review，worktree 保留在 `.tasks/worktrees/task-N`。解决后 `tasks.cjs merge-task <root> <id> <summary>` 重试，或 `tasks.cjs worktree-discard <root> <id>` 放弃。
+- `tasks.cjs worktree-list <root>` 看当前所有 worktree 状态。
