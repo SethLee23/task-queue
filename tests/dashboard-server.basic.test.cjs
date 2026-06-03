@@ -17,7 +17,7 @@ test('GET / 返回 index.html 内容', async () => {
   const res = await fetch(`http://127.0.0.1:${inst.port}/`);
   assert.equal(res.status, 200);
   const body = await res.text();
-  assert.match(body, /task-queue dashboard/);
+  assert.match(body, /Helm/);
 });
 
 test('GET 不存在路径返回 404', async () => {

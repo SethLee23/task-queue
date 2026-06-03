@@ -34,10 +34,10 @@ test('createBlankWorkbook 创建带两个 sheet、表头与 COLUMNS 对齐的空
   assert.deepEqual(headers, COLUMNS.map(c => c.header));
 });
 
-test('COLUMNS 11 列、key 顺序为 id/desc/scope/priority/status/note/question/risk/ctime/ftime/model', () => {
-  assert.equal(COLUMNS.length, 11);
+test('COLUMNS 13 列、key 顺序为 id/desc/scope/priority/status/note/question/risk/ctime/ftime/model/tags/checklist', () => {
+  assert.equal(COLUMNS.length, 13);
   assert.deepEqual(COLUMNS.map(c => c.key), [
-    'id', 'desc', 'scope', 'priority', 'status', 'note', 'question', 'risk', 'ctime', 'ftime', 'model',
+    'id', 'desc', 'scope', 'priority', 'status', 'note', 'question', 'risk', 'ctime', 'ftime', 'model', 'tags', 'checklist',
   ]);
 });
 
