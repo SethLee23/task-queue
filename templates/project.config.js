@@ -14,6 +14,15 @@ module.exports = {
 
   sameDayShareVersion: __SAME_DAY_SHARE__,
 
+  // 并行执行(v2):code 任务进独立 worktree 并发跑,non-code(调研/问答)不开 worktree。
+  // allowSameScope=true 时同 scope 任务由主 Claude 判断 desc 文件不重叠后放行,撞了有 rebase→review 兜底。
+  // 存量项目没有本字段 = 关闭(纯串行,行为不变)。
+  parallel: {
+    enabled: true,
+    maxConcurrency: 3,
+    allowSameScope: true,
+  },
+
   /**
    * 根据变更文件列表推断所属模块名（中文）。
    * @param {string[]} changedFiles git diff --name-only 的结果数组
