@@ -125,7 +125,7 @@ Excel 初态(maxConcurrency=3,allowSameScope=true):
 
 | 文件 | 职责 |
 |---|---|
-| `lib/orchestrator.cjs` | 编排规则纯函数:校验候选 + 应用 scope/并发规则,输出给主 Claude 推理的结构 |
+| ~~`lib/orchestrator.cjs`~~ | **实现时取消**:scopeMutex 计算(约 8 行)直接内联进 `commands/plan-batch.cjs`,lane/批次的语义判断交给主 Claude 在 loop-prompt Step 1b 做,单独 lib 是过度设计。 |
 | `lib/worktree.cjs` | worktree 生命周期 + symlink(createForTask / destroyForTask / listOrphans) |
 | `commands/plan-batch.cjs` | 候选 + scope 互斥提示输出(JSON) |
 | `commands/claim-batch.cjs` | 原子 claim 多条(全成或全回滚) |
