@@ -22,6 +22,8 @@ const KNOWN_COMMANDS = [
   'set-desired-model', 'set-task-model',
   'set-checklist', 'tick-checklist', 'untick-checklist', 'add-checklist', 'del-checklist',
   'watchdog', 'reopen',
+  'plan-batch', 'claim-batch', 'worktree-create', 'worktree-list', 'worktree-discard',
+  'done-in-worktree', 'merge-task', 'requeue',
 ];
 
 /** 不需要 <project-root> 参数的命令集合 */
