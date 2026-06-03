@@ -8,6 +8,8 @@ const os = require('node:os');
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'srv-open-test-'));
 process.env.TASK_QUEUE_REGISTRY_PATH = path.join(tmpDir, 'registry.json');
+// 不要真的 spawn 编辑器——否则每跑一次测试就往 VS Code/Trae 弹一个 opentgt-XXXX 空白标签页。
+process.env.TASK_QUEUE_OPEN_DISABLED = '1';
 
 const { startServer } = require('../commands/dashboard-server.cjs');
 
@@ -16,13 +18,14 @@ after(async () => {
   if (inst) await inst.close();
   fs.rmSync(tmpDir, { recursive: true, force: true });
   delete process.env.TASK_QUEUE_REGISTRY_PATH;
+  delete process.env.TASK_QUEUE_OPEN_DISABLED;
 });
 
-test('POST /api/open 合法 target 返回 200（不真的打开 — 用 about:blank 形式）', async () => {
+test('POST /api/open 合法 target 返回 200（TASK_QUEUE_OPEN_DISABLED 下不真的 spawn 编辑器）', async () => {
   inst = await startServer({ port: 0 });
 
-  // 用一个临时空目录做 target；macOS open 会成功调用 Finder 打开它，
-  // 即便环境不支持也已经返回 200。
+  // 造一个临时目录做 target；因 TASK_QUEUE_OPEN_DISABLED=1，handler 走护栏分支
+  // 直接返回 200 而不 spawn，避免污染开发者的编辑器窗口。
   const target = fs.mkdtempSync(path.join(tmpDir, 'opentgt-'));
   const res = await fetch(`http://127.0.0.1:${inst.port}/api/open`, {
     method: 'POST',

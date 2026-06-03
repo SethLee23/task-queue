@@ -488,6 +488,10 @@ async function handleOpen(req, res) {
   }
 
   const { cmd, args } = buildOpenCommand(resolved);
+  // 测试环境护栏：置位时不真的 spawn 编辑器，避免跑测试时往 VS Code/Trae 弹空白标签页。
+  if (process.env.TASK_QUEUE_OPEN_DISABLED === '1') {
+    return sendJson(res, 200, { ok: true, opener: 'disabled' });
+  }
   try {
     const child = spawn(cmd, args, { stdio: 'ignore', detached: true });
     child.on('error', () => { /* ignore — 客户端已收到响应 */ });
