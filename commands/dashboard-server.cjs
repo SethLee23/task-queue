@@ -1171,14 +1171,15 @@ function handle(req, res) {
   const parsed = url.parse(req.url, true);
   const { pathname } = parsed;
 
-  // 本地面板防护:拒绝非本机 Host(防 DNS rebinding)与非 JSON 的带类型 POST(防跨站 simple-request 盲打)。
+  // 本地面板防护:拒绝非本机 Host(防 DNS rebinding)；POST /api/* 强制 application/json
+  // (含空 CT——攻击者可用 fetch(Blob,{type:''}) 发出无 CT 但带 body 的跨站 simple-request 绕过旧规则)。
   const hostname = (req.headers.host || '').replace(/:\d+$/, '').replace(/^\[|\]$/g, '');
   if (!['127.0.0.1', 'localhost', '::1'].includes(hostname)) {
     return sendJson(res, 403, { error: 'forbidden host' });
   }
   if (req.method === 'POST' && pathname.startsWith('/api/')) {
     const ct = (req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
-    if (ct && ct !== 'application/json') {
+    if (ct !== 'application/json') {
       return sendJson(res, 415, { error: 'Content-Type 必须是 application/json' });
     }
   }

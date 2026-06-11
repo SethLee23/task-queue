@@ -139,15 +139,29 @@ test('安全防护: POST /api/* 带非 JSON Content-Type → 415', async () => {
   assert.equal(res.status, 415);
 });
 
-test('安全防护: 无 Content-Type 的无 body POST 不受影响', async () => {
-  // 不存在的 slug → 走到业务 404,而不是被 415 拦截
+test('安全防护: 无 Content-Type 的 POST /api/* → 415', async () => {
+  // 空 CT 与无 CT 均不得绕过防护（防跨站 simple-request 盲打，Blob type='' 场景）
   const base = await srv();
   const res = await rawRequest(`${base}/api/projects/no-such-slug/resume`, {
     method: 'POST',
     headers: { Host: `127.0.0.1:${new URL(base).port}` },
   });
-  assert.notEqual(res.status, 415);
-  assert.notEqual(res.status, 403);
+  assert.equal(res.status, 415);
+});
+
+test('安全防护: 带 body 无 Content-Type 的 POST /api/* → 415', async () => {
+  // 攻击者通过 fetch(Blob, {type:''}) 携带任意 body 但不设 CT，同样应被拦截
+  const base = await srv();
+  const body = JSON.stringify({ root: '/tmp/x', mode: 'attach' });
+  const res = await rawRequest(`${base}/api/init/detect`, {
+    method: 'POST',
+    headers: {
+      Host: `127.0.0.1:${new URL(base).port}`,
+      'Content-Length': Buffer.byteLength(body),
+    },
+    body,
+  });
+  assert.equal(res.status, 415);
 });
 
 // ─── Part B: POST /api/init ───────────────────────────────────────────────────

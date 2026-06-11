@@ -49,7 +49,7 @@ test('POST resume 删 loop-paused', async () => {
   const entry = registryAdd(proj);
   if (!inst) inst = await startServer({ port: 0 });
   await postJson(`http://127.0.0.1:${inst.port}/api/projects/${entry.slug}/pause`, { reason: 'x' });
-  const res = await fetch(`http://127.0.0.1:${inst.port}/api/projects/${entry.slug}/resume`, { method: 'POST' });
+  const res = await fetch(`http://127.0.0.1:${inst.port}/api/projects/${entry.slug}/resume`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
   assert.equal(res.status, 200);
   assert.equal(readPaused(proj), null);
 });
