@@ -29,6 +29,11 @@ const { markDoneCore } = require('./mark-done.cjs');
 const { setTaskModelCore } = require('./set-task-model.cjs');
 const { resolveTarget, buildOpenCommand } = require('../lib/open-target.cjs');
 const { sessionName: lcSessionName, renderStartScript } = require('../lib/launch-command.cjs');
+const { detectCore } = require('../lib/detect-core.cjs');
+const {
+  resolveInitPath, validateAttachRoot, validateCreateTarget, inspectRoot,
+  runInit, registerOnly,
+} = require('../lib/init-flow.cjs');
 
 const WEB_ROOT = path.join(__dirname, '..', 'web');
 
@@ -804,6 +809,38 @@ async function handleCleanupMissing(_req, res) {
 }
 
 /**
+ * 处理 POST /api/init/detect — 「接入项目」向导第一步：路径校验 + 结构探测。
+ * body: { root, mode: 'attach'|'create' }
+ * attach: 目录必须存在,返回完整 detect 结果;
+ * create: 目标必须不存在且父目录存在,返回空 detect(目录还没建,向导用空项目默认值)。
+ * @param {http.IncomingMessage} req
+ * @param {http.ServerResponse} res
+ */
+async function handleInitDetect(req, res) {
+  const body = await readJsonBody(req).catch(() => null);
+  if (!body || !body.root || !['attach', 'create'].includes(body.mode)) {
+    return sendJson(res, 400, { error: 'root 和 mode(attach|create) 必填' });
+  }
+  try {
+    const root = resolveInitPath(body.root);
+    if (body.mode === 'create') {
+      validateCreateTarget(root);
+      return sendJson(res, 200, {
+        root,
+        isGitRepo: false,
+        alreadyInitialized: false,
+        detect: { type: 'single', packages: [], commitPattern: null, sameDayShareVersion: 'unknown' },
+      });
+    }
+    validateAttachRoot(root);
+    const { isGitRepo, alreadyInitialized } = inspectRoot(root);
+    return sendJson(res, 200, { root, isGitRepo, alreadyInitialized, detect: detectCore(root) });
+  } catch (err) {
+    return sendJson(res, 400, { error: String(err.message) });
+  }
+}
+
+/**
  * 判断 ftime 是否属于今天（本地时区）。
  * ftime 可能是 Date 对象、ISO string 或空值。
  * @param {unknown} ftime
@@ -1108,6 +1145,11 @@ function handle(req, res) {
 
   if (pathname === '/api/cleanup-missing' && req.method === 'POST') {
     handleCleanupMissing(req, res).catch(err => sendJson(res, 500, { error: String(err.message) }));
+    return;
+  }
+
+  if (pathname === '/api/init/detect' && req.method === 'POST') {
+    handleInitDetect(req, res).catch(err => sendJson(res, 500, { error: String(err.message) }));
     return;
   }
 
