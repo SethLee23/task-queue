@@ -90,8 +90,18 @@ test('gitCommitPaths 只提交指定文件,不带上其它已暂存改动', () =
 });
 
 test('gitInitRepo 在空目录初始化 git 仓库', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'git-init-test-'));
+  const dir = fs.mkdtempSync(path.join(tmpDir, 'init-'));
   gitInitRepo(dir);
   assert.ok(fs.existsSync(path.join(dir, '.git')));
-  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('gitCommitPaths 空数组抛错', () => {
+  const repo = setupRepo();
+  assert.throws(() => gitCommitPaths(repo, 'x', []), /不能为空/);
+});
+
+test('gitCommitPaths 无改动文件抛错', () => {
+  const repo = setupRepo();
+  // README.md 已追踪，但未修改，commit 应抛 "nothing to commit" 类错误
+  assert.throws(() => gitCommitPaths(repo, 'noop', ['README.md']));
 });
