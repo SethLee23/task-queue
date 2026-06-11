@@ -1335,6 +1335,7 @@ function openInitModal() {
     loading: false,
     submitting: false,
     error: '',
+    seq: 0,                        // 竞态守卫：每次 detect 请求自增
   };
   renderInitModal();
 }
@@ -1360,8 +1361,24 @@ async function initModalNext() {
     if (!m.name.trim()) { m.error = '项目名不能为空'; renderInitModal(); return; }
     rawRoot = m.parentDir.trim().replace(/\/+$/, '') + '/' + m.name.trim();
   }
+  // 竞态守卫：记录本次请求的序号和当前 tab
+  m.seq = (m.seq || 0) + 1;
+  const seq = m.seq;
+  const requestedTab = m.tab;
   m.loading = true; m.error = ''; renderInitModal();
-  const r = await postAction('/api/init/detect', { root: rawRoot, mode: m.tab });
+  let r;
+  try {
+    r = await postAction('/api/init/detect', { root: rawRoot, mode: m.tab });
+  } catch (err) {
+    // 网络层异常（fetch reject）兜底
+    if (state.initModal !== m || m.seq !== seq || m.tab !== requestedTab) return;
+    m.loading = false;
+    m.error = '网络错误: ' + (err?.message || err);
+    renderInitModal();
+    return;
+  }
+  // 过期响应回收守卫
+  if (state.initModal !== m || m.seq !== seq || m.tab !== requestedTab) return;
   m.loading = false;
   if (!r.ok) { m.error = r.body?.error || `失败 (${r.status})`; renderInitModal(); return; }
   if (m.tab === 'create') localStorage.setItem(INIT_PARENT_KEY, m.parentDir.trim());
@@ -1379,13 +1396,15 @@ async function initModalNext() {
 /** 已接入项目的兜底:仅注册到面板,不动配置。 */
 async function submitRegisterOnly() {
   const m = state.initModal;
-  if (!m) return;
+  if (!m || m.submitting) return;
+  m.submitting = true;
   const r = await postAction('/api/init', { mode: 'register', root: m.root });
   if (r.ok) {
     closeInitModal();
     await refreshProjects();
     selectProject(r.body.slug);
   } else {
+    m.submitting = false;
     m.error = r.body?.error || `失败 (${r.status})`;
     renderInitModal();
   }
@@ -1442,7 +1461,14 @@ function renderInitStep1(modal, m) {
       autocomplete: 'off', autocorrect: 'off', autocapitalize: 'off', spellcheck: 'false',
     });
     pathInput.value = m.attachPath;
-    bindImeSafeInput(pathInput, v => { m.attachPath = v; });
+    bindImeSafeInput(pathInput, v => {
+      m.attachPath = v;
+      if (m.alreadyInitialized) {
+        m.alreadyInitialized = false;
+        const n = document.getElementById('init-already-notice');
+        if (n) n.remove();
+      }
+    });
     modal.appendChild(el('label', { className: 'modal-label' },
       '项目路径（绝对路径，支持 ~）', pathInput));
   } else {
@@ -1452,7 +1478,15 @@ function renderInitStep1(modal, m) {
       autocomplete: 'off', autocorrect: 'off', autocapitalize: 'off', spellcheck: 'false',
     });
     parentInput.value = m.parentDir;
-    bindImeSafeInput(parentInput, v => { m.parentDir = v; renderInitPathPreview(m); });
+    bindImeSafeInput(parentInput, v => {
+      m.parentDir = v;
+      if (m.alreadyInitialized) {
+        m.alreadyInitialized = false;
+        const n = document.getElementById('init-already-notice');
+        if (n) n.remove();
+      }
+      renderInitPathPreview(m);
+    });
     modal.appendChild(el('label', { className: 'modal-label' }, '父目录', parentInput));
 
     const nameInput = el('input', {
@@ -1461,7 +1495,15 @@ function renderInitStep1(modal, m) {
       autocomplete: 'off', autocorrect: 'off', autocapitalize: 'off', spellcheck: 'false',
     });
     nameInput.value = m.name;
-    bindImeSafeInput(nameInput, v => { m.name = v; renderInitPathPreview(m); });
+    bindImeSafeInput(nameInput, v => {
+      m.name = v;
+      if (m.alreadyInitialized) {
+        m.alreadyInitialized = false;
+        const n = document.getElementById('init-already-notice');
+        if (n) n.remove();
+      }
+      renderInitPathPreview(m);
+    });
     modal.appendChild(el('label', { className: 'modal-label' }, '项目名', nameInput));
 
     modal.appendChild(el('div', { id: 'init-path-preview', className: 'init-path-preview' },
@@ -1469,9 +1511,9 @@ function renderInitStep1(modal, m) {
   }
 
   if (m.alreadyInitialized) {
-    modal.appendChild(el('div', { className: 'init-notice' },
-      '该项目已接入过任务队列（存在 .tasks/project.config.js）。',
-      el('button', { className: 'btn', onclick: submitRegisterOnly }, '仅注册到面板'),
+    modal.appendChild(el('div', { id: 'init-already-notice', className: 'init-notice' },
+      `该项目已接入过任务队列（${m.root}）。`,
+      el('button', { className: 'btn', disabled: m.submitting, onclick: submitRegisterOnly }, '仅注册到面板'),
     ));
   }
 
