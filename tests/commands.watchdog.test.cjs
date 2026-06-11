@@ -53,12 +53,45 @@ test('心跳 ts 损坏 → skip(bad-ts)，不重启', () => {
   assert.equal(r.reason, 'bad-ts');
 });
 
+// ---- 主动上下文重置（proactive-context-reset）----
+// 心跳新鲜但本会话轮数(rounds)超阈值 → 在 loop 撑死前主动重启,把上下文从地板重来。
+const freshRounds = (rounds, phase = 'idle') => ({ phase, ts: stale(60 * 1000), rounds });
+
+test('proactive：新鲜 idle + rounds 达阈值 → restart(proactive-context-reset)', () => {
+  const r = decideProject({ now: NOW, hidden: false, hb: freshRounds(40), paused: null, st: emptyState, maxRounds: 40 });
+  assert.equal(r.decision, 'restart');
+  assert.equal(r.reason, 'proactive-context-reset');
+});
+test('proactive：新鲜但 executing + rounds 超阈值 → reset(不打断在飞任务)', () => {
+  const r = decideProject({ now: NOW, hidden: false, hb: freshRounds(99, 'executing'), paused: null, st: emptyState, maxRounds: 40 });
+  assert.equal(r.decision, 'reset');
+});
+test('proactive：新鲜但 paused + rounds 超阈值 → reset(暂停中不碰)', () => {
+  const r = decideProject({ now: NOW, hidden: false, hb: freshRounds(99), paused: '手动', st: emptyState, maxRounds: 40 });
+  assert.equal(r.decision, 'reset');
+});
+test('proactive：新鲜 + rounds 未达阈值 → reset', () => {
+  const r = decideProject({ now: NOW, hidden: false, hb: freshRounds(39), paused: null, st: emptyState, maxRounds: 40 });
+  assert.equal(r.decision, 'reset');
+});
+test('proactive：maxRounds 缺省时用默认 MAX_ROUNDS(40)', () => {
+  assert.equal(wd.MAX_ROUNDS, 40, '默认阈值应为 40');
+  const r = decideProject({ now: NOW, hidden: false, hb: freshRounds(40), paused: null, st: emptyState });
+  assert.equal(r.decision, 'restart');
+  assert.equal(r.reason, 'proactive-context-reset');
+});
+test('proactive：无 rounds 字段的新鲜心跳 → reset(向后兼容老心跳文件)', () => {
+  const r = decideProject({ now: NOW, hidden: false, hb: { phase: 'idle', ts: stale(60 * 1000) }, paused: null, st: emptyState, maxRounds: 40 });
+  assert.equal(r.decision, 'reset');
+});
+
 function makeDeps(overrides = {}) {
   const tmuxCalls = [];
   const pushes = [];
+  const logs = [];
   let savedState = overrides.state || {};
   return {
-    tmuxCalls, pushes, getState: () => savedState,
+    tmuxCalls, pushes, logs, getState: () => savedState,
     deps: {
       now: NOW,
       registryList: () => overrides.projects || [],
@@ -69,7 +102,8 @@ function makeDeps(overrides = {}) {
       execFileSyncImpl: (bin, args) => { tmuxCalls.push([bin, ...args].join(' ')); },
       launchHeadless: (root, slug, exec) => { exec('tmux', ['new-session', '-ds', `task-queue-loop-${slug}`]); return `task-queue-loop-${slug}`; },
       testPush: async (msg) => { pushes.push(msg); },
-      log: () => {},
+      maxRoundsFor: (root) => (overrides.maxRounds || {})[root] ?? wd.MAX_ROUNDS,
+      log: (m) => { logs.push(m); },
     },
   };
 }
@@ -107,6 +141,24 @@ test('runPass：hidden 项目完全忽略', async () => {
   await runPass(h.deps);
   assert.equal(h.tmuxCalls.length, 0);
   assert.deepEqual(h.getState(), {});
+});
+
+test('runPass：心跳新鲜 + rounds 超阈值 → 主动重启并日志标注 proactive-context-reset', async () => {
+  const proj = { slug: 'demo', root: '/p/demo', hidden: false };
+  const hb = { '/p/demo': { phase: 'idle', ts: stale(60 * 1000), rounds: 50 } };
+  const h = makeDeps({ projects: [proj], hb, paused: {}, state: {}, maxRounds: { '/p/demo': 40 } });
+  await runPass(h.deps);
+  assert.ok(h.tmuxCalls.some(c => c.includes('kill-session') && c.includes('task-queue-loop-demo')), '应先 kill 旧会话');
+  assert.ok(h.tmuxCalls.some(c => c.includes('new-session') && c.includes('task-queue-loop-demo')), '应主动重启');
+  assert.ok(h.logs.some(l => l.includes('proactive-context-reset')), '日志应标注主动重置原因');
+});
+
+test('runPass：maxRounds 被项目配置上调,rounds 未达阈值 → 不重启', async () => {
+  const proj = { slug: 'demo', root: '/p/demo', hidden: false };
+  const hb = { '/p/demo': { phase: 'idle', ts: stale(60 * 1000), rounds: 50 } };
+  const h = makeDeps({ projects: [proj], hb, paused: {}, state: {}, maxRounds: { '/p/demo': 100 } });
+  await runPass(h.deps);
+  assert.ok(!h.tmuxCalls.some(c => c.includes('new-session')), 'rounds 50 < 阈值 100,不应重启');
 });
 
 test('renderPlist 含 Label / StartInterval 60 / RunAtLoad / PATH / ProgramArguments', () => {

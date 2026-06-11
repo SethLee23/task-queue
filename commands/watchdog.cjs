@@ -9,23 +9,34 @@ const { readHeartbeat } = require('../lib/heartbeat.cjs');
 const { readPaused } = require('../lib/paused.cjs');
 const { readState, writeState } = require('../lib/watchdog-state.cjs');
 const { sessionName, launchHeadless } = require('../lib/launch-command.cjs');
+const { loadProjectConfig, getMaxRounds } = require('../lib/config.cjs');
 const testPushCmd = require('./test-push.cjs');
 
 const STALE_MS = 30 * 60 * 1000;
 const GRACE_MS = 5 * 60 * 1000;
 const MAX_RESTARTS = 3;
+const MAX_ROUNDS = 40;
 const WATCHDOG_LABEL = 'com.taskqueue.watchdog';
 
 const EMPTY = () => ({ consecutive: 0, lastRestartAt: null, gaveUp: false });
 
 /**
  * 单项目决策（纯函数）。
+ * @param {object} p
+ * @param {number} [p.maxRounds] 主动上下文重置阈值（本会话轮数 ≥ 此值且健康空闲时主动重启）。默认 MAX_ROUNDS。
  * @returns {{decision:'ignore'|'reset'|'skip'|'restart'|'giveup', reason?:string}}
  */
-function decideProject({ now, hidden, hb, paused, st }) {
+function decideProject({ now, hidden, hb, paused, st, maxRounds = MAX_ROUNDS }) {
   if (hidden) return { decision: 'ignore' };
   const age = hb && hb.ts ? Date.parse(hb.ts) : NaN;
-  if (!Number.isNaN(age) && (now - age) <= STALE_MS) return { decision: 'reset' };
+  if (!Number.isNaN(age) && (now - age) <= STALE_MS) {
+    // 心跳新鲜 = loop 健康。被动重启不触发；但若本会话轮数超阈值,在 loop 撑死/
+    // 上下文拖垮成本之前主动重启,把上下文从 50k 地板重来。复用既有安全闸:
+    // executing 不打断、paused 不碰 —— 仅在两轮之间的健康空窗重置。
+    if (paused || hb.phase === 'executing') return { decision: 'reset' };
+    if ((hb.rounds || 0) >= maxRounds) return { decision: 'restart', reason: 'proactive-context-reset' };
+    return { decision: 'reset' };
+  }
   if (paused) return { decision: 'skip', reason: 'paused' };
   if (!hb || !hb.ts) return { decision: 'skip', reason: 'never-ran' };
   if (Number.isNaN(age)) return { decision: 'skip', reason: 'bad-ts' };
@@ -50,6 +61,8 @@ async function runPass(deps) {
     writeState: writeSt = writeState,
     execFileSyncImpl = realExecFileSync,
     launchHeadless: launch = launchHeadless,
+    // 每项目主动重置阈值:读 project.config.js 的 maxRounds(缺省/异常兜底 MAX_ROUNDS)。
+    maxRoundsFor = (root) => { try { return getMaxRounds(loadProjectConfig(root)); } catch (_) { return MAX_ROUNDS; } },
     testPush = (msg) => testPushCmd(msg, ['--title', 'task-queue 看门狗']),
     log = (m) => process.stdout.write(m + '\n'),
   } = deps;
@@ -62,7 +75,8 @@ async function runPass(deps) {
       const st = state[entry.slug] || EMPTY();
       const hb = readHb(entry.root);
       const paused = readPausedFn(entry.root);
-      const { decision, reason } = decideProject({ now, hidden: entry.hidden, hb, paused, st });
+      const maxRounds = maxRoundsFor(entry.root);
+      const { decision, reason } = decideProject({ now, hidden: entry.hidden, hb, paused, st, maxRounds });
 
       if (decision === 'ignore') continue;
       if (decision === 'skip') { log(`[skip] ${entry.slug} (${reason})`); continue; }
@@ -87,7 +101,7 @@ async function runPass(deps) {
         const session = sessionName(entry.slug);
         state[entry.slug] = { ...st, consecutive: st.consecutive + 1, lastRestartAt: now, gaveUp: false };
         writeSt(state);
-        log(`[restart] ${entry.slug} 第 ${st.consecutive + 1} 次重启`);
+        log(`[restart] ${entry.slug} ${reason ? reason : `第 ${st.consecutive + 1} 次重启`}`);
         try { execFileSyncImpl('tmux', ['kill-session', '-t', session], { stdio: 'ignore' }); } catch (_) {}
         launch(entry.root, entry.slug, execFileSyncImpl);
       }
@@ -192,4 +206,5 @@ module.exports.renderPlist = renderPlist;
 module.exports.STALE_MS = STALE_MS;
 module.exports.GRACE_MS = GRACE_MS;
 module.exports.MAX_RESTARTS = MAX_RESTARTS;
+module.exports.MAX_ROUNDS = MAX_ROUNDS;
 module.exports.WATCHDOG_LABEL = WATCHDOG_LABEL;

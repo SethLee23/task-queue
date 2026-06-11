@@ -69,4 +69,13 @@ module.exports = {
    * - 影响 loop-prompt Step 5 的 idle 和 review/blocked 两种等待
    */
   idleSleepSeconds: 270,
+
+  /**
+   * watchdog 主动上下文重置阈值：本会话唤醒轮数 ≥ 此值且 loop 健康空闲时，
+   * 在上下文胀到拖垮成本前主动重启 loop（把上下文从 ~50k 地板重来）。
+   * - 默认 40 ≈ 上下文封顶 ~210k、约 3h/次冷启动
+   * - 范围 [5, 500]，繁忙项目可调低（如 25）更勤重置，几乎不挂机的可调高（如 80）
+   * - executing 不打断、paused 不碰；复用 watchdog 既有安全闸
+   */
+  maxRounds: 40,
 };

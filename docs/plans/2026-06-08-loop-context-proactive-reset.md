@@ -1,7 +1,7 @@
 # Loop 上下文主动重置（让 watchdog 撑死前先重启）
 
 日期：2026-06-08
-状态：方案待 review（用户选择"先不改，只出方案"）
+状态：✅ 已实施（2026-06-12）。路线 C 落地：`heartbeat.rounds` 轮数计数 + `launchHeadless` 归零 + `decideProject` 主动重启分支（`proactive-context-reset`）+ `maxRounds` 可配（默认 40，project.config.js 可覆盖）。全量测试覆盖（`commands.watchdog.test.cjs` / `config.test.cjs`）。待真机观察：把某项目 `maxRounds` 调到 5 跑几轮，确认 watchdog 日志出现 `[restart] <slug> proactive-context-reset`。
 作者：Claude（基于 ~/.claude/projects 全量 transcript 用量分析）
 
 ---

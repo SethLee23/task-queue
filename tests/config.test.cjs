@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { loadProjectConfig, getIdleSleepSeconds } = require('../lib/config.cjs');
+const { loadProjectConfig, getIdleSleepSeconds, getMaxRounds } = require('../lib/config.cjs');
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'task-queue-cfg-'));
 after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
@@ -79,4 +79,30 @@ test('getIdleSleepSeconds 越界 → clamp 到 [60, 3600]', () => {
   assert.equal(getIdleSleepSeconds({ idleSleepSeconds: 30 }), 60);
   assert.equal(getIdleSleepSeconds({ idleSleepSeconds: 99999 }), 3600);
   assert.equal(getIdleSleepSeconds({ idleSleepSeconds: -100 }), 60);
+});
+
+test('getMaxRounds 缺字段/null/undefined → 默认 40', () => {
+  assert.equal(getMaxRounds({}), 40);
+  assert.equal(getMaxRounds({ maxRounds: null }), 40);
+  assert.equal(getMaxRounds({ maxRounds: undefined }), 40);
+  assert.equal(getMaxRounds(null), 40);
+});
+
+test('getMaxRounds 非数字 → 默认 40', () => {
+  assert.equal(getMaxRounds({ maxRounds: 'abc' }), 40);
+  assert.equal(getMaxRounds({ maxRounds: NaN }), 40);
+});
+
+test('getMaxRounds 合法数字 → 透传 + 取整', () => {
+  assert.equal(getMaxRounds({ maxRounds: 25 }), 25);
+  assert.equal(getMaxRounds({ maxRounds: 80 }), 80);
+  assert.equal(getMaxRounds({ maxRounds: 40.6 }), 41);
+  assert.equal(getMaxRounds({ maxRounds: '30' }), 30);
+});
+
+test('getMaxRounds 越界 → clamp 到 [5, 500]', () => {
+  assert.equal(getMaxRounds({ maxRounds: 0 }), 5);
+  assert.equal(getMaxRounds({ maxRounds: 1 }), 5);
+  assert.equal(getMaxRounds({ maxRounds: 99999 }), 500);
+  assert.equal(getMaxRounds({ maxRounds: -10 }), 5);
 });
