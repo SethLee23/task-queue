@@ -29,8 +29,21 @@ const { markDoneCore } = require('./mark-done.cjs');
 const { setTaskModelCore } = require('./set-task-model.cjs');
 const { resolveTarget, buildOpenCommand } = require('../lib/open-target.cjs');
 const { sessionName: lcSessionName, renderStartScript, launchHeadless } = require('../lib/launch-command.cjs');
+const { detectCore } = require('../lib/detect-core.cjs');
+const {
+  resolveInitPath, validateAttachRoot, validateCreateTarget, inspectRoot,
+  runInit, registerOnly,
+} = require('../lib/init-flow.cjs');
 
 const WEB_ROOT = path.join(__dirname, '..', 'web');
+
+/**
+ * 服务器当前绑定的 host，由 startServer 在 listen 前赋值。
+ * 用于 handle() 决定是否执行 DNS rebinding 防护：
+ * 绑 loopback（默认）时检查 Host 白名单；
+ * 显式绑 0.0.0.0 或局域网 IP 时跳过检查——用户主动暴露局域网，可用性优先。
+ */
+let boundHost = '127.0.0.1';
 
 /** slug 合法格式：小写字母、数字、连字符 */
 const SLUG_RE = /^[a-z0-9-]+$/;
@@ -907,7 +920,72 @@ async function handleCleanupMissing(_req, res) {
 }
 
 /**
- * 判断 ftime 是否属于今天（本地时区）。
+ * 处理 POST /api/init/detect — 「接入项目」向导第一步：路径校验 + 结构探测。
+ * body: { root, mode: 'attach'|'create' }
+ * attach: 目录必须存在,返回完整 detect 结果;
+ * create: 目标必须不存在且父目录存在,返回空 detect(目录还没建,向导用空项目默认值)。
+ * @param {http.IncomingMessage} req
+ * @param {http.ServerResponse} res
+ */
+async function handleInitDetect(req, res) {
+  const body = await readJsonBody(req).catch(() => null);
+  if (!body || !body.root || !['attach', 'create'].includes(body.mode)) {
+    return sendJson(res, 400, { error: 'root 和 mode(attach|create) 必填' });
+  }
+  try {
+    const root = resolveInitPath(body.root);
+    if (body.mode === 'create') {
+      validateCreateTarget(root);
+      return sendJson(res, 200, {
+        root,
+        isGitRepo: false,
+        alreadyInitialized: false,
+        detect: { type: 'single', packages: [], commitPattern: null, sameDayShareVersion: 'unknown' },
+      });
+    }
+    validateAttachRoot(root);
+    const { isGitRepo, alreadyInitialized } = inspectRoot(root);
+    return sendJson(res, 200, { root, isGitRepo, alreadyInitialized, detect: detectCore(root) });
+  } catch (err) {
+    return sendJson(res, 400, { error: String(err.message) });
+  }
+}
+
+/**
+ * 处理 POST /api/init — 「接入项目」向导提交。
+ * body: { mode: 'attach'|'create'|'register', root, gitInit?, answers? }
+ * register 模式只 registerOnly(项目已有 .tasks 配置但 registry 丢失的兜底);
+ * attach/create 走 runInit 全链路。git commit 失败不回滚,转 warning 字段。
+ * @param {http.IncomingMessage} req
+ * @param {http.ServerResponse} res
+ */
+async function handleInit(req, res) {
+  const body = await readJsonBody(req).catch(() => null);
+  if (!body || !body.root || !['attach', 'create', 'register'].includes(body.mode)) {
+    return sendJson(res, 400, { error: 'root 和 mode(attach|create|register) 必填' });
+  }
+  try {
+    const root = resolveInitPath(body.root);
+    if (body.mode === 'register') {
+      const entry = registerOnly(root);
+      return sendJson(res, 200, { ok: true, slug: entry.slug, root, committed: false, warning: null });
+    }
+    const answers = body.answers;
+    if (!answers || typeof answers !== 'object'
+        || !answers.scopeMapping || Object.keys(answers.scopeMapping).length === 0
+        || !answers.commitTemplate) {
+      return sendJson(res, 400, { error: 'answers 缺失或不完整（需要 scopeMapping / commitTemplate）' });
+    }
+    const result = await runInit({
+      mode: body.mode, root, gitInit: body.gitInit === true, answers,
+    });
+    return sendJson(res, 200, { ok: true, ...result });
+  } catch (err) {
+    return sendJson(res, 400, { error: String(err.message) });
+  }
+}
+
+/**
  * ftime 可能是 Date 对象、ISO string 或空值。
  * @param {unknown} ftime
  * @param {string} today YYYY-MM-DD 格式的今日日期
@@ -1207,6 +1285,22 @@ function handle(req, res) {
   const parsed = url.parse(req.url, true);
   const { pathname } = parsed;
 
+  // 本地面板防护:拒绝非本机 Host(防 DNS rebinding)；POST /api/* 强制 application/json
+  // (含空 CT——攻击者可用 fetch(Blob,{type:''}) 发出无 CT 但带 body 的跨站 simple-request 绕过旧规则)。
+  // Host 白名单仅在绑 loopback 时执行；显式绑 0.0.0.0 或局域网 IP 表示用户主动暴露，可用性优先。
+  const hostname = (req.headers.host || '').replace(/:\d+$/, '').replace(/^\[|\]$/g, '');
+  if (['127.0.0.1', 'localhost', '::1'].includes(boundHost)) {
+    if (!['127.0.0.1', 'localhost', '::1'].includes(hostname)) {
+      return sendJson(res, 403, { error: 'forbidden host' });
+    }
+  }
+  if (req.method === 'POST' && pathname.startsWith('/api/')) {
+    const ct = (req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+    if (ct !== 'application/json') {
+      return sendJson(res, 415, { error: 'Content-Type 必须是 application/json' });
+    }
+  }
+
   if (pathname === '/api/projects' && req.method === 'GET') {
     handleGetProjects(res).catch(err => sendJson(res, 500, { error: String(err.message) }));
     return;
@@ -1214,6 +1308,16 @@ function handle(req, res) {
 
   if (pathname === '/api/cleanup-missing' && req.method === 'POST') {
     handleCleanupMissing(req, res).catch(err => sendJson(res, 500, { error: String(err.message) }));
+    return;
+  }
+
+  if (pathname === '/api/init/detect' && req.method === 'POST') {
+    handleInitDetect(req, res).catch(err => sendJson(res, 500, { error: String(err.message) }));
+    return;
+  }
+
+  if (pathname === '/api/init' && req.method === 'POST') {
+    handleInit(req, res).catch(err => sendJson(res, 500, { error: String(err.message) }));
     return;
   }
 
@@ -1376,6 +1480,7 @@ function handle(req, res) {
  */
 async function startServer({ port = 5732, host = '127.0.0.1' } = {}) {
   const server = http.createServer(handle);
+  boundHost = host;
   await new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(port, host, () => {

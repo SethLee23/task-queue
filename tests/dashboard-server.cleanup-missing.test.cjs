@@ -40,7 +40,7 @@ test('POST /api/cleanup-missing 移除 root 不存在的项目，保留正常项
   assert.equal(registryList().length, 3);
 
   inst = await startServer({ port: 0 });
-  const res = await fetch(`http://127.0.0.1:${inst.port}/api/cleanup-missing`, { method: 'POST' });
+  const res = await fetch(`http://127.0.0.1:${inst.port}/api/cleanup-missing`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
   assert.equal(res.status, 200);
   const body = await res.json();
 
@@ -58,7 +58,7 @@ test('POST /api/cleanup-missing root 存在但 .tasks 缺失也算 missing', asy
   registryAdd(noTasks);
 
   if (!inst) inst = await startServer({ port: 0 });
-  const res = await fetch(`http://127.0.0.1:${inst.port}/api/cleanup-missing`, { method: 'POST' });
+  const res = await fetch(`http://127.0.0.1:${inst.port}/api/cleanup-missing`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
   const body = await res.json();
 
   assert.equal(body.count, 1);
@@ -67,7 +67,7 @@ test('POST /api/cleanup-missing root 存在但 .tasks 缺失也算 missing', asy
 
 test('POST /api/cleanup-missing 空注册表时返回 count=0', async () => {
   if (!inst) inst = await startServer({ port: 0 });
-  const res = await fetch(`http://127.0.0.1:${inst.port}/api/cleanup-missing`, { method: 'POST' });
+  const res = await fetch(`http://127.0.0.1:${inst.port}/api/cleanup-missing`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
   const body = await res.json();
 
   assert.equal(body.ok, true);

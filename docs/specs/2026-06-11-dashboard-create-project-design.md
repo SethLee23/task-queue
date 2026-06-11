@@ -109,3 +109,27 @@ init 的 4 个问题以 Web 表单向导形式复刻，与 Claude 会话里的�
 | .gitignore commit | 服务端自动 commit（显式列文件），与 CLI init 等价 |
 | 新建路径输入 | 双 tab + 默认父目录（localStorage 记忆） |
 | 复用方式 | 抽 lib/detect-core.cjs、lib/init-core.cjs，进程内调用 |
+
+## 实施补记（2026-06-11，随分支落地的批准偏差）
+
+实现与审查过程中批准的增强（均已带测试落地）：
+
+1. **inspectRoot 的 isGitRepo 改用 `git rev-parse --is-inside-work-tree`**（而非 `.git` 存在性）——
+   monorepo 子目录 attach 时不再误导用户嵌套 git init；子目录的 `.gitignore` commit 落父仓库。
+2. **dashboard 请求防护层**（spec 外新增）：Host 白名单（仅默认 loopback 绑定时生效；
+   显式 `--host 0.0.0.0` 局域网模式跳过）+ `POST /api/*` 强制 `Content-Type: application/json`
+   （堵跨站 simple-request 盲打，含空 CT 变体）。curl 调用 POST API 需带 JSON 头（SKILL.md 已注）。
+3. **resolveInitPath 做 realpath 物理规范化**——堵大小写不敏感 FS / firmlink / symlink 别名绕过
+   home 守卫。
+4. **前端竞态守卫**：detect 响应代回收（seq + tab + modal 同一性）；「仅注册」提示条在路径
+   编辑时失效；网络异常兜底。
+5. **scope 改名同步默认模板**（用户未自定义时），模板护栏增加「缺 `{version}`」警告。
+6. **registerOnly 校验 `.tasks/project.config.js` 存在**，守住「仅注册」兜底的前置条件。
+7. **向导 UI 微调**：「同时 git init」勾选出现在第二步（spec 写第一步，功能等价）；
+   同日版本号复用为 checkbox（detect `unknown` 时默认勾选）；模板预填用含
+   `{module}`/`{desc}` 占位符的真实模板而非 §3 的字面示意文本。
+8. **attach 到无 package.json 项目的内联提示**（§3 要求）在第二步以 notice 形式实现。
+
+已知非阻塞遗留（后续可做）：chip 输入 blur 竞态（既有控件行为）、handleInit 内部错误统一回
+400、create 在已有仓库子树下嵌套 git init 无前端提示、detect 同步 execFileSync、
+「上一步→下一步」重建表单丢编辑、`detect.commitPattern` 暂未被向导消费。

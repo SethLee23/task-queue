@@ -1387,3 +1387,30 @@ a.linkified:hover { text-decoration: underline; }
   .toast { min-width: 0; max-width: 100%; font-size: 14px; }
 }
 
+
+/* ---------- 接入项目向导 ---------- */
+.add-project-btn { width: 100%; margin-top: 10px; }
+.init-modal { width: min(560px, 92vw); max-height: 86vh; overflow-y: auto; }
+.init-tabs { display: flex; gap: 6px; margin-bottom: 10px; }
+.init-tab {
+  flex: 1; padding: 6px 0; border: 1px solid var(--border);
+  background: transparent; color: var(--text); border-radius: 6px; cursor: pointer;
+}
+.init-tab.active { border-color: var(--accent); color: var(--accent); }
+.init-path-preview { font-size: 12px; color: var(--text-dim); margin: 2px 0 8px; min-height: 16px; }
+.init-notice {
+  display: flex; align-items: center; gap: 10px; font-size: 13px;
+  padding: 8px; border: 1px solid var(--border); border-radius: 6px; margin: 8px 0;
+}
+.init-scope-block {
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px; margin-bottom: 10px;
+}
+.init-scope-title { font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+.tpl-preview {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px; white-space: pre-wrap;
+  background: var(--panel-2); border-radius: 6px;
+  padding: 6px 8px; margin-top: 4px;
+}
+.tpl-warning { color: var(--red); font-size: 12px; margin-top: 2px; }
