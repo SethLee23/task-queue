@@ -841,7 +841,40 @@ async function handleInitDetect(req, res) {
 }
 
 /**
- * 判断 ftime 是否属于今天（本地时区）。
+ * 处理 POST /api/init — 「接入项目」向导提交。
+ * body: { mode: 'attach'|'create'|'register', root, gitInit?, answers? }
+ * register 模式只 registerOnly(项目已有 .tasks 配置但 registry 丢失的兜底);
+ * attach/create 走 runInit 全链路。git commit 失败不回滚,转 warning 字段。
+ * @param {http.IncomingMessage} req
+ * @param {http.ServerResponse} res
+ */
+async function handleInit(req, res) {
+  const body = await readJsonBody(req).catch(() => null);
+  if (!body || !body.root || !['attach', 'create', 'register'].includes(body.mode)) {
+    return sendJson(res, 400, { error: 'root 和 mode(attach|create|register) 必填' });
+  }
+  try {
+    const root = resolveInitPath(body.root);
+    if (body.mode === 'register') {
+      const entry = registerOnly(root);
+      return sendJson(res, 200, { ok: true, slug: entry.slug, root, committed: false, warning: null });
+    }
+    const answers = body.answers;
+    if (!answers || typeof answers !== 'object'
+        || !answers.scopeMapping || Object.keys(answers.scopeMapping).length === 0
+        || !answers.commitTemplate) {
+      return sendJson(res, 400, { error: 'answers 缺失或不完整（需要 scopeMapping / commitTemplate）' });
+    }
+    const result = await runInit({
+      mode: body.mode, root, gitInit: body.gitInit === true, answers,
+    });
+    return sendJson(res, 200, { ok: true, ...result });
+  } catch (err) {
+    return sendJson(res, 400, { error: String(err.message) });
+  }
+}
+
+/**
  * ftime 可能是 Date 对象、ISO string 或空值。
  * @param {unknown} ftime
  * @param {string} today YYYY-MM-DD 格式的今日日期
@@ -1138,6 +1171,18 @@ function handle(req, res) {
   const parsed = url.parse(req.url, true);
   const { pathname } = parsed;
 
+  // 本地面板防护:拒绝非本机 Host(防 DNS rebinding)与非 JSON 的带类型 POST(防跨站 simple-request 盲打)。
+  const hostname = (req.headers.host || '').replace(/:\d+$/, '').replace(/^\[|\]$/g, '');
+  if (!['127.0.0.1', 'localhost', '::1'].includes(hostname)) {
+    return sendJson(res, 403, { error: 'forbidden host' });
+  }
+  if (req.method === 'POST' && pathname.startsWith('/api/')) {
+    const ct = (req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+    if (ct && ct !== 'application/json') {
+      return sendJson(res, 415, { error: 'Content-Type 必须是 application/json' });
+    }
+  }
+
   if (pathname === '/api/projects' && req.method === 'GET') {
     handleGetProjects(res).catch(err => sendJson(res, 500, { error: String(err.message) }));
     return;
@@ -1150,6 +1195,11 @@ function handle(req, res) {
 
   if (pathname === '/api/init/detect' && req.method === 'POST') {
     handleInitDetect(req, res).catch(err => sendJson(res, 500, { error: String(err.message) }));
+    return;
+  }
+
+  if (pathname === '/api/init' && req.method === 'POST') {
+    handleInit(req, res).catch(err => sendJson(res, 500, { error: String(err.message) }));
     return;
   }
 
