@@ -15,6 +15,7 @@ const state = {
   imagePreview: null,
   cardDetailModal: null,
   historyModal: null,
+  initModal: null,
   hiddenExpanded: false,
 };
 
@@ -743,6 +744,11 @@ function renderProjects() {
     }
     list.appendChild(section);
   }
+
+  list.appendChild(el('button', {
+    className: 'btn add-project-btn',
+    onclick: openInitModal,
+  }, '＋ 接入项目'));
 }
 
 async function setHidden(slug, hidden) {
@@ -1308,6 +1314,184 @@ function buildTagInput(form, knownTags) {
   wrap.appendChild(suggestBox);
   suggestBox.style.display = 'none';
   return wrap;
+}
+
+/* ---------- 接入项目向导 ---------- */
+
+const INIT_PARENT_KEY = 'task-queue-init-parent-dir';
+
+function openInitModal() {
+  state.initModal = {
+    step: 1,
+    tab: 'attach',                 // 'attach' | 'create'
+    attachPath: '',
+    parentDir: localStorage.getItem(INIT_PARENT_KEY) || '',
+    name: '',
+    root: '',                      // detect 后服务端规范化的绝对路径
+    isGitRepo: false,
+    alreadyInitialized: false,
+    gitInit: false,
+    form: null,                    // 第二步表单 state(Task 9 buildFormFromDetect 产出)
+    loading: false,
+    submitting: false,
+    error: '',
+  };
+  renderInitModal();
+}
+
+function closeInitModal() {
+  state.initModal = null;
+  renderInitModal();
+}
+
+/**
+ * 向导第一步「下一步」:调 /api/init/detect 校验路径并探测,
+ * 成功 → 进第二步(已接入项目则停在第一步显示「仅注册」入口)。
+ */
+async function initModalNext() {
+  const m = state.initModal;
+  if (!m || m.loading) return;
+  let rawRoot;
+  if (m.tab === 'attach') {
+    if (!m.attachPath.trim()) { m.error = '路径不能为空'; renderInitModal(); return; }
+    rawRoot = m.attachPath.trim();
+  } else {
+    if (!m.parentDir.trim()) { m.error = '父目录不能为空'; renderInitModal(); return; }
+    if (!m.name.trim()) { m.error = '项目名不能为空'; renderInitModal(); return; }
+    rawRoot = m.parentDir.trim().replace(/\/+$/, '') + '/' + m.name.trim();
+  }
+  m.loading = true; m.error = ''; renderInitModal();
+  const r = await postAction('/api/init/detect', { root: rawRoot, mode: m.tab });
+  m.loading = false;
+  if (!r.ok) { m.error = r.body?.error || `失败 (${r.status})`; renderInitModal(); return; }
+  if (m.tab === 'create') localStorage.setItem(INIT_PARENT_KEY, m.parentDir.trim());
+  m.root = r.body.root;
+  m.isGitRepo = r.body.isGitRepo;
+  m.alreadyInitialized = r.body.alreadyInitialized;
+  m.gitInit = !r.body.isGitRepo; // 非 git 仓库默认勾选「同时 git init」
+  if (!m.alreadyInitialized) {
+    m.form = buildFormFromDetect(r.body.detect);
+    m.step = 2;
+  }
+  renderInitModal();
+}
+
+/** 已接入项目的兜底:仅注册到面板,不动配置。 */
+async function submitRegisterOnly() {
+  const m = state.initModal;
+  if (!m) return;
+  const r = await postAction('/api/init', { mode: 'register', root: m.root });
+  if (r.ok) {
+    closeInitModal();
+    await refreshProjects();
+    selectProject(r.body.slug);
+  } else {
+    m.error = r.body?.error || `失败 (${r.status})`;
+    renderInitModal();
+  }
+}
+
+/** 占位:Task 9 实现 detect → 第二步表单 state 的转换。 */
+function buildFormFromDetect(_detect) {
+  return null;
+}
+
+function renderInitModal() {
+  const old = document.getElementById('init-modal');
+  if (old) old.remove();
+  const m = state.initModal;
+  if (!m) return;
+
+  const backdrop = el('div', {
+    id: 'init-modal', className: 'modal-backdrop',
+    onclick: e => { if (e.target === backdrop) closeInitModal(); },
+  });
+  const modal = el('div', { className: 'modal init-modal' });
+  modal.appendChild(el('div', { className: 'modal-title' },
+    m.step === 1 ? '接入项目 — 选择路径' : `接入项目 — 配置（${m.root}）`));
+
+  if (m.step === 1) {
+    renderInitStep1(modal, m);
+  } else {
+    modal.appendChild(el('div', { className: 'modal-label' }, '(第二步 Task 9 实现)'));
+  }
+
+  if (m.error) modal.appendChild(el('div', { className: 'modal-error' }, m.error));
+  backdrop.appendChild(modal);
+  document.body.appendChild(backdrop);
+}
+
+function renderInitStep1(modal, m) {
+  // 双 tab
+  const tabs = el('div', { className: 'init-tabs' },
+    el('button', {
+      className: 'init-tab' + (m.tab === 'attach' ? ' active' : ''),
+      onclick: () => { m.tab = 'attach'; m.error = ''; m.alreadyInitialized = false; renderInitModal(); },
+    }, '接入已有'),
+    el('button', {
+      className: 'init-tab' + (m.tab === 'create' ? ' active' : ''),
+      onclick: () => { m.tab = 'create'; m.error = ''; m.alreadyInitialized = false; renderInitModal(); },
+    }, '从零新建'),
+  );
+  modal.appendChild(tabs);
+
+  if (m.tab === 'attach') {
+    const pathInput = el('input', {
+      className: 'modal-input', type: 'text',
+      placeholder: '/path/to/project 或 ~/projects/foo',
+      autocomplete: 'off', autocorrect: 'off', autocapitalize: 'off', spellcheck: 'false',
+    });
+    pathInput.value = m.attachPath;
+    bindImeSafeInput(pathInput, v => { m.attachPath = v; });
+    modal.appendChild(el('label', { className: 'modal-label' },
+      '项目路径（绝对路径，支持 ~）', pathInput));
+  } else {
+    const parentInput = el('input', {
+      className: 'modal-input', type: 'text',
+      placeholder: '~/projects',
+      autocomplete: 'off', autocorrect: 'off', autocapitalize: 'off', spellcheck: 'false',
+    });
+    parentInput.value = m.parentDir;
+    bindImeSafeInput(parentInput, v => { m.parentDir = v; renderInitPathPreview(m); });
+    modal.appendChild(el('label', { className: 'modal-label' }, '父目录', parentInput));
+
+    const nameInput = el('input', {
+      className: 'modal-input', type: 'text',
+      placeholder: 'my-new-project',
+      autocomplete: 'off', autocorrect: 'off', autocapitalize: 'off', spellcheck: 'false',
+    });
+    nameInput.value = m.name;
+    bindImeSafeInput(nameInput, v => { m.name = v; renderInitPathPreview(m); });
+    modal.appendChild(el('label', { className: 'modal-label' }, '项目名', nameInput));
+
+    modal.appendChild(el('div', { id: 'init-path-preview', className: 'init-path-preview' },
+      initPathPreviewText(m)));
+  }
+
+  if (m.alreadyInitialized) {
+    modal.appendChild(el('div', { className: 'init-notice' },
+      '该项目已接入过任务队列（存在 .tasks/project.config.js）。',
+      el('button', { className: 'btn', onclick: submitRegisterOnly }, '仅注册到面板'),
+    ));
+  }
+
+  modal.appendChild(el('div', { className: 'modal-actions' },
+    el('button', { className: 'btn', onclick: closeInitModal }, '取消'),
+    el('button', {
+      className: 'btn primary', disabled: m.loading, onclick: initModalNext,
+    }, m.loading ? '检测中…' : '下一步'),
+  ));
+}
+
+function initPathPreviewText(m) {
+  const parent = (m.parentDir || '').trim().replace(/\/+$/, '');
+  const name = (m.name || '').trim();
+  return parent && name ? `→ ${parent}/${name}` : ' ';
+}
+
+function renderInitPathPreview(m) {
+  const box = document.getElementById('init-path-preview');
+  if (box) box.textContent = initPathPreviewText(m);
 }
 
 function renderAddModal() {
