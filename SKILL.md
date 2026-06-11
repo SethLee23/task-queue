@@ -21,10 +21,11 @@ description: 任务队列自动化 — 用户在 Excel 加任务，配合 /loop 
 | "暂停队列" / "pause loop" | 跑 `dashboard pause <slug>` 或提示在面板操作 |
 | "恢复队列" / "resume loop" | 跑 `dashboard resume <slug>` 或提示在面板操作 |
 | "立即执行" / "马上扫" / "wake now" | 在面板点 ⚡ 立即执行 或 POST `/api/projects/<slug>/scan-now`：tmux 启动的 loop 走 send-keys 注入 stdin ~1s 响应；否则降级 wake-now 旗子（≤ idleSleepSeconds，默认 270s） |
+| "在面板上接入/新建项目" | 提示打开 dashboard 点侧栏底部「＋ 接入项目」，向导等价于 §init 流程 |
 
 ## §init 流程
 
-新项目首次接入，4 个问题搞定。
+新项目首次接入，4 个问题搞定。也可以不走会话：dashboard 侧栏底部「＋ 接入项目」提供等价的 Web 向导（支持接入已有目录 / 从零新建）。
 
 ### Step 1: 探测
 
@@ -197,6 +198,8 @@ node ~/.claude/skills/task-queue/tasks.cjs dashboard
 - 点 "pause" 暂停 loop（正在执行的任务跑完后停下；下一轮 next 不取）
 - 点 "resume" 恢复
 - 点 "⚡ 立即执行"：tmux 启动的 loop 通过 send-keys 把"扫一下"注入 stdin，~1s 响应；非 tmux 启动则降级写 wake-now 旗子，loop 在 ≤ `idleSleepSeconds`（默认 270s）的下次唤醒时消费。paused/offline/missing 状态下按钮 disabled
+
+> **注**：通过 API 触发（如 `POST /api/projects/<slug>/scan-now`）需带请求头 `Content-Type: application/json`。curl 示例：`curl -X POST -H 'Content-Type: application/json' http://127.0.0.1:5732/api/projects/<slug>/scan-now`
 
 ### idleSleepSeconds：响应延迟与成本平衡
 

@@ -92,6 +92,7 @@ node ~/.claude/skills/task-queue/tasks.cjs dashboard
 - 点 **⚡ 立即执行** —— tmux 启动的 loop 通过 send-keys 把"扫一下"注入 stdin（~1s 响应,跳过 ScheduleWakeup 倒计时);非 tmux 启动则降级 wake-now 旗子（≤ idleSleepSeconds）
 - 点 **📋 复制启动命令** 拿到 tmux 启动脚本（带 PROJECT_ROOT 替换）
 - 点 **删除** 把项目移出注册表
+- **＋ 接入项目**：侧栏底部按钮，双 tab 向导（接入已有目录 / 从零新建并 git init），表单复刻 init 4 问，提交即落盘 `.tasks/` 并自动 commit `.gitignore`
 
 > **tmux session 名规约**: `task-queue-loop-<slug>`。loop 退出但 session 残留时,⚡ 会把"扫一下"键入裸 shell —— 看到 phase=offline 时执行 `tmux kill-session -t task-queue-loop-<slug>` 后重启。
 
