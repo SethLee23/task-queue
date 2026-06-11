@@ -1,10 +1,10 @@
 const { test, after } = require('node:test');
 const assert = require('node:assert/strict');
-const { execSync } = require('node:child_process');
+const { execSync, execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { gitStatus, gitAdd, gitCommit, gitLogSubjects, gitDiffStat } = require('../lib/git.cjs');
+const { gitStatus, gitAdd, gitCommit, gitLogSubjects, gitDiffStat, gitCommitPaths, gitInitRepo } = require('../lib/git.cjs');
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'task-queue-git-'));
 after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
@@ -70,4 +70,28 @@ test('gitStatus 重命名条目只返回新路径', () => {
   const changed = gitStatus(repo);
   // 应该只有 new.txt，不含 ' -> '
   assert.deepEqual(changed, ['new.txt']);
+});
+
+test('gitCommitPaths 只提交指定文件,不带上其它已暂存改动', () => {
+  const repo = setupRepo();
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'a\n');
+  fs.writeFileSync(path.join(repo, 'b.txt'), 'b\n');
+  execFileSync('git', ['add', 'a.txt', 'b.txt'], { cwd: repo });
+
+  gitCommitPaths(repo, 'only a', ['a.txt']);
+
+  const lastFiles = execFileSync('git', ['show', '--name-only', '--pretty=format:', 'HEAD'],
+    { cwd: repo, encoding: 'utf8' }).trim().split('\n');
+  assert.deepEqual(lastFiles, ['a.txt']);
+  // b.txt 仍在暂存区未被提交
+  const staged = execFileSync('git', ['diff', '--cached', '--name-only'],
+    { cwd: repo, encoding: 'utf8' }).trim();
+  assert.equal(staged, 'b.txt');
+});
+
+test('gitInitRepo 在空目录初始化 git 仓库', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'git-init-test-'));
+  gitInitRepo(dir);
+  assert.ok(fs.existsSync(path.join(dir, '.git')));
+  fs.rmSync(dir, { recursive: true, force: true });
 });
