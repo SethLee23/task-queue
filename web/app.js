@@ -1413,7 +1413,7 @@ async function submitRegisterOnly() {
   if (r.ok) {
     closeInitModal();
     await refreshProjects();
-    selectProject(r.body.slug);
+    selectProject(r.body?.slug);
   } else {
     m.submitting = false;
     m.error = r.body?.error || `失败 (${r.status})`;
@@ -1471,6 +1471,7 @@ function defaultCommitTemplate(scope) {
 /** 渲染模板示例预览(与 project.config.js commitMessage 的占位符一致)。 */
 function renderTemplateExample(s) {
   return s.template
+    .replace('{id}', '0042')
     .replace('{version}', s.version)
     .replace('{module}', s._chipForm.tags[0] || '全局')
     .replace('{desc}', '修复登录跳转')
@@ -1484,6 +1485,7 @@ function templateWarning(tpl) {
   if (subject.includes('{desc}') || subject.includes('{summary}')) {
     return 'subject 行不应包含 {desc}/{summary}——那是 git log --oneline 看到的位置';
   }
+  if (!tpl.includes('{version}')) return '模板缺 {version}，同日版本复用将失效（每次 done 都 bump）';
   return '';
 }
 
@@ -1622,7 +1624,6 @@ function renderInitStep2(modal, m) {
       autocomplete: 'off', autocorrect: 'off', autocapitalize: 'off', spellcheck: 'false',
     });
     scopeInput.value = s.scope;
-    bindImeSafeInput(scopeInput, v => { s.scope = v.trim(); });
     const autoCommitBox = el('input', { type: 'checkbox' });
     autoCommitBox.checked = s.autoCommit;
     autoCommitBox.addEventListener('change', () => { s.autoCommit = autoCommitBox.checked; });
@@ -1640,6 +1641,19 @@ function renderInitStep2(modal, m) {
       s.template = v;
       previewBox.textContent = renderTemplateExample(s);
       warnBox.textContent = templateWarning(s.template);
+    });
+
+    // scopeInput 回调须在 tplArea/previewBox/warnBox 声明之后绑定,以便同步默认模板
+    bindImeSafeInput(scopeInput, v => {
+      const oldScope = s.scope;
+      s.scope = v.trim();
+      // 若用户未自定义模板(仍等于旧 scope 生成的默认值),则随 scope 改名同步更新
+      if (s.template === defaultCommitTemplate(oldScope)) {
+        s.template = defaultCommitTemplate(s.scope);
+        tplArea.value = s.template;
+        previewBox.textContent = renderTemplateExample(s);
+        warnBox.textContent = templateWarning(s.template);
+      }
     });
     block.appendChild(el('label', { className: 'modal-label' }, 'commit 模板', tplArea));
     block.appendChild(previewBox);
@@ -1668,7 +1682,7 @@ function renderInitStep2(modal, m) {
   }
 
   modal.appendChild(el('div', { className: 'modal-actions' },
-    el('button', { className: 'btn', onclick: () => { m.step = 1; m.error = ''; renderInitModal(); } }, '上一步'),
+    el('button', { className: 'btn', disabled: m.submitting, onclick: () => { m.step = 1; m.error = ''; renderInitModal(); } }, '上一步'),
     el('button', {
       className: 'btn primary', disabled: m.submitting, onclick: submitInitModal,
     }, m.submitting ? '创建中…' : (m.tab === 'create' ? '创建并初始化' : '接入')),
@@ -1722,9 +1736,9 @@ async function submitInitModal() {
       localStorage.setItem(INIT_PARENT_KEY, m.parentDir.trim());
     }
     closeInitModal();
-    if (r.body.warning) showToast(r.body.warning, 'info', 8000);
+    if (r.body?.warning) showToast(r.body.warning, 'info', 8000);
     await refreshProjects();
-    selectProject(r.body.slug);
+    selectProject(r.body?.slug);
   } else {
     m.error = r.body?.error || `失败 (${r.status})`;
     renderInitModal();
