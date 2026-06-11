@@ -20,7 +20,8 @@ module.exports = async function heartbeat(projectRoot, args) {
   if (!VALID_PHASES.has(phase)) {
     throw new Error(`非法 phase: ${phase}（需为 ${[...VALID_PHASES].join('/')} 之一）`);
   }
-  const patch = { phase };
+  // 每轮唤醒（Step 0.1）恰好调一次本命令 → 自增 rounds，作为当前会话上下文膨胀的代理指标。
+  const patch = { phase, incrementRound: true };
   if (model) patch.model = model;
   const ok = writeHeartbeat(projectRoot, patch);
   process.stdout.write(JSON.stringify({ ok, phase, model: model || undefined }) + '\n');

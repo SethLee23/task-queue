@@ -58,3 +58,23 @@ test('writeHeartbeat 目标目录不存在仍返回 false 不抛', () => {
   const ok = writeHeartbeat('/nonexistent/path', { phase: 'idle' });
   assert.equal(ok, false);
 });
+
+test('stopped 标记：显式置位 → 任何唤醒/启动自动清除', () => {
+  const proj = mkProj();
+  // 停：置 stopped
+  writeHeartbeat(proj, { stopped: true });
+  assert.equal(readHeartbeat(proj).stopped, true);
+  // 不带控制位的普通写入应保留 stopped
+  writeHeartbeat(proj, { phase: 'idle' });
+  assert.equal(readHeartbeat(proj).stopped, true, '普通写入应保留 stopped');
+  // 唤醒（heartbeat 命令的 incrementRound）→ 清除
+  writeHeartbeat(proj, { phase: 'idle', incrementRound: true });
+  assert.equal(readHeartbeat(proj).stopped, false, 'incrementRound 应清除 stopped');
+});
+
+test('stopped 标记：resetRounds（启动）也清除', () => {
+  const proj = mkProj();
+  writeHeartbeat(proj, { stopped: true });
+  writeHeartbeat(proj, { resetRounds: true });
+  assert.equal(readHeartbeat(proj).stopped, false);
+});

@@ -1022,6 +1022,25 @@ function renderDetail() {
     title: '生成 tmux 启动脚本（粘到 terminal 即跑；启动后 ⚡ 立即执行 通过 send-keys 即时唤醒）',
   }, '📋 复制启动命令');
 
+  const loopRunning = p.online !== 'offline' && p.online !== 'missing';
+
+  const stopBtn = el('button', {
+    className: 'btn danger',
+    disabled: !loopRunning,
+    title: loopRunning
+      ? '暂停 + 杀掉 tmux 进程：彻底停止烧 token，watchdog 也不会救活（可逆，点"起"恢复）'
+      : 'loop 未运行',
+    onclick: () => stopProject(),
+  }, '⏹ 停 loop');
+
+  const startBtn = el('button', {
+    className: 'btn' + (loopRunning ? '' : ' primary'),
+    title: loopRunning
+      ? '杀掉当前会话再无头拉起 = 上下文归零（手动重置一次，省 token）'
+      : '后台无头拉起 loop，免去复制命令粘贴到 terminal',
+    onclick: () => startProject(loopRunning),
+  }, loopRunning ? '↻ 重启 loop' : '▶ 起 loop');
+
   const desired = p.desiredModel || 'opus';
   const modelSel = el('select', {
     className: 'model-select',
@@ -1045,10 +1064,10 @@ function renderDetail() {
         el('h2', null, p.name),
       ),
       el('div', { className: 'meta' },
-        `${statusLabel(p)} · 心跳 ${p.lastHeartbeat ? new Date(p.lastHeartbeat).toLocaleString() : '—'} · 模型 ${p.lastModel ?? '—'}`,
+        `${statusLabel(p)} · 心跳 ${p.lastHeartbeat ? new Date(p.lastHeartbeat).toLocaleString() : '—'} · 模型 ${p.lastModel ?? '—'} · 本会话第 ${p.rounds || 0} 轮`,
       ),
     ),
-    el('div', { className: 'header-actions' }, modelGroup, addBtn, wakeBtn, pauseBtn, loopBtn),
+    el('div', { className: 'header-actions' }, modelGroup, addBtn, wakeBtn, pauseBtn, startBtn, stopBtn, loopBtn),
   ));
 
   if (p.currentTask) {
@@ -2271,6 +2290,33 @@ async function scanNowProject() {
   }
 }
 
+async function stopProject() {
+  if (!confirm('停 loop？\n\n会杀掉 tmux 进程并写暂停旗子，彻底停止烧 token；watchdog 不会把它救活。\n之后点"▶ 起 loop"即可恢复。')) return;
+  const r = await postAction(`/api/projects/${state.selectedSlug}/stop`, {});
+  if (!r.ok) {
+    showToast(`停 loop 失败 (HTTP ${r.status}): ${r.body?.error || '未知错误'}`, 'error', 5000);
+    return;
+  }
+  showToast(r.body?.killed ? '已停 loop：进程已杀，暂停旗子已写' : 'loop 进程本就不在；已写暂停旗子', 'success');
+  await refreshProjects();
+}
+
+async function startProject(running) {
+  const msg = running
+    ? '重启 loop？\n\n会杀掉当前会话再无头拉起一个新的 —— 上下文归零（手动重置一次）。'
+    : '起 loop？\n\n会在后台无头拉起一个 claude 会话自主开跑（会持续烧 token）。';
+  if (!confirm(msg)) return;
+  const r = await postAction(`/api/projects/${state.selectedSlug}/start`, {});
+  if (!r.ok) {
+    showToast(`起 loop 失败 (HTTP ${r.status}): ${r.body?.error || '未知错误'}`, 'error', 5000);
+    return;
+  }
+  showToast(r.body?.restarted ? '已重启 loop（上下文归零）' : '已后台拉起 loop', 'success');
+  // 新会话启动需几秒才写首心跳，延迟再 refresh 让卡片状态跟上
+  await refreshProjects();
+  setTimeout(() => { refreshProjects().catch(() => {}); }, 4000);
+}
+
 async function changeDesiredModel(model) {
   if (!['opus', 'sonnet', 'haiku'].includes(model)) return;
   const r = await postAction(`/api/projects/${state.selectedSlug}/desired-model`, { model });
@@ -2328,7 +2374,43 @@ async function cleanupMissing(count) {
   }
 }
 
+async function refreshWatchdogStatus() {
+  const btn = document.getElementById('watchdog-toggle');
+  if (!btn) return;
+  try {
+    const r = await fetch('/api/watchdog');
+    const body = await r.json().catch(() => null);
+    const loaded = !!(body && body.loaded);
+    btn.dataset.loaded = loaded ? '1' : '0';
+    btn.classList.toggle('on', loaded);
+    btn.title = loaded
+      ? '看门狗：已开启（loop 撑死/掉线会自动重启）— 点击关闭'
+      : '看门狗：已关闭 — 点击开启';
+  } catch (_) {
+    btn.title = '看门狗状态获取失败';
+  }
+}
+
+async function toggleWatchdog() {
+  const btn = document.getElementById('watchdog-toggle');
+  const loaded = btn && btn.dataset.loaded === '1';
+  const action = loaded ? 'uninstall' : 'install';
+  const msg = loaded
+    ? '关闭看门狗？\n\n关闭后 loop 撑死/掉线将不再自动重启。'
+    : '开启看门狗？\n\n会注册 launchd 任务，每 60s 检查一次；loop 掉线超 30min 自动重启。';
+  if (!confirm(msg)) return;
+  const r = await postAction('/api/watchdog', { action });
+  if (!r.ok) {
+    showToast(`看门狗${loaded ? '关闭' : '开启'}失败 (HTTP ${r.status}): ${r.body?.error || '未知错误'}`, 'error', 5000);
+    return;
+  }
+  showToast(loaded ? '看门狗已关闭' : '看门狗已开启', 'success');
+  await refreshWatchdogStatus();
+}
+
 refreshProjects();
 setInterval(refreshProjects, 5000);
 applyTheme(localStorage.getItem(THEME_KEY) || 'dark');
 document.getElementById('theme-toggle')?.addEventListener('click', toggleTheme);
+document.getElementById('watchdog-toggle')?.addEventListener('click', toggleWatchdog);
+refreshWatchdogStatus();

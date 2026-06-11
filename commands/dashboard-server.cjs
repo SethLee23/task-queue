@@ -17,7 +17,7 @@ function __setExecFileSyncImpl(fn) {
 const { list: registryList, remove: registryRemove, update: registryUpdate, VALID_MODELS } = require('../lib/registry.cjs');
 const { readRows, withWorkbook, SHEET_IN_PROGRESS, SHEET_ARCHIVED, colIndex } = require('../lib/workbook.cjs');
 const { STATES, PRIORITY_ORDER } = require('../lib/states.cjs');
-const { readHeartbeat } = require('../lib/heartbeat.cjs');
+const { readHeartbeat, writeHeartbeat } = require('../lib/heartbeat.cjs');
 const { readPaused, setPaused, clearPaused } = require('../lib/paused.cjs');
 const { readWakeNow, setWakeNow } = require('../lib/wake.cjs');
 const { localDateStr } = require('../lib/datetime.cjs');
@@ -28,7 +28,7 @@ const { reopenCore } = require('./reopen.cjs');
 const { markDoneCore } = require('./mark-done.cjs');
 const { setTaskModelCore } = require('./set-task-model.cjs');
 const { resolveTarget, buildOpenCommand } = require('../lib/open-target.cjs');
-const { sessionName: lcSessionName, renderStartScript } = require('../lib/launch-command.cjs');
+const { sessionName: lcSessionName, renderStartScript, launchHeadless } = require('../lib/launch-command.cjs');
 
 const WEB_ROOT = path.join(__dirname, '..', 'web');
 
@@ -288,6 +288,109 @@ async function handleScanNow(_req, res, rawSlug) {
   } catch (_err) {
     setWakeNow(entry.root, '面板立即执行');
     return sendJson(res, 200, { ok: true, mode: 'wake-flag', sessionName });
+  }
+}
+
+/**
+ * 处理 POST /api/projects/:slug/stop
+ * 一键停 loop（防 watchdog 救活）：① 写暂停旗子（watchdog 见 paused 跳过，loop 即便没死也只空转不取活）
+ * ② tmux kill-session 杀进程（彻底停止上下文缓存计费）。可逆——点"起"即恢复。
+ * @param {http.IncomingMessage} req
+ * @param {http.ServerResponse} res
+ * @param {string} rawSlug
+ */
+async function handleStop(req, res, rawSlug) {
+  const slug = decodeURIComponent(rawSlug);
+  if (!SLUG_RE.test(slug)) return sendJson(res, 400, { error: 'invalid slug format' });
+
+  const entry = registryList().find(p => p.slug === slug);
+  if (!entry) return sendJson(res, 404, { error: 'project not found' });
+
+  const body = await readJsonBody(req).catch(() => ({}));
+  const reason = (body && body.reason) ? String(body.reason) : '面板停止 loop';
+  setPaused(entry.root, reason);
+
+  const session = scanSessionName(slug);
+  let killed = false;
+  try {
+    execFileSyncImpl('tmux', ['kill-session', '-t', session], { stdio: 'ignore' });
+    killed = true;
+  } catch (_err) { /* 没有 session 也算停成功（幂等） */ }
+  // 标记 stopped：deriveOnline 立即判离线，不必等心跳过期 90min。loop 再启动会自动清除。
+  writeHeartbeat(entry.root, { stopped: true });
+  sendJson(res, 200, { ok: true, killed, paused: true, sessionName: session });
+}
+
+/**
+ * 处理 POST /api/projects/:slug/start
+ * 一键起/重启 loop：清暂停旗子 → 若已在跑则先 kill（重启即上下文归零）→ launchHeadless 无头拉起。
+ * 服务端直接拉起 `claude`，免去复制命令到 terminal 粘贴。
+ * @param {http.IncomingMessage} _req
+ * @param {http.ServerResponse} res
+ * @param {string} rawSlug
+ */
+async function handleStart(_req, res, rawSlug) {
+  const slug = decodeURIComponent(rawSlug);
+  if (!SLUG_RE.test(slug)) return sendJson(res, 400, { error: 'invalid slug format' });
+
+  const entry = registryList().find(p => p.slug === slug);
+  if (!entry) return sendJson(res, 404, { error: 'project not found' });
+
+  clearPaused(entry.root);
+
+  const session = scanSessionName(slug);
+  let restarted = false;
+  try {
+    execFileSyncImpl('tmux', ['has-session', '-t', session], { stdio: 'ignore' });
+    // 已存在 → 先杀，重启 = 上下文从地板重来
+    try { execFileSyncImpl('tmux', ['kill-session', '-t', session], { stdio: 'ignore' }); } catch (_e) {}
+    restarted = true;
+  } catch (_err) { /* 没有 session：纯冷启 */ }
+
+  try {
+    launchHeadless(entry.root, slug, execFileSyncImpl);
+  } catch (err) {
+    return sendJson(res, 500, { error: `启动 loop 失败: ${err.message}` });
+  }
+  sendJson(res, 200, { ok: true, restarted, sessionName: session });
+}
+
+/** tasks.cjs 绝对路径（watchdog 子命令复用同一 CLI）。 */
+function tasksCjsPath() {
+  return path.resolve(__dirname, '..', 'tasks.cjs');
+}
+
+/**
+ * 处理 GET /api/watchdog
+ * 返回 watchdog launchd 加载状态 + 退避 state。复用 `tasks.cjs watchdog status`。
+ * @param {http.ServerResponse} res
+ */
+async function handleWatchdogGet(res) {
+  try {
+    const out = execFileSyncImpl(process.execPath, [tasksCjsPath(), 'watchdog', 'status'], { encoding: 'utf8' });
+    sendJson(res, 200, JSON.parse(String(out).trim()));
+  } catch (err) {
+    sendJson(res, 500, { error: String(err.message) });
+  }
+}
+
+/**
+ * 处理 POST /api/watchdog
+ * body: { action: 'install' | 'uninstall' }  全局开关 watchdog。
+ * @param {http.IncomingMessage} req
+ * @param {http.ServerResponse} res
+ */
+async function handleWatchdogSet(req, res) {
+  const body = await readJsonBody(req).catch(() => null);
+  const action = body && body.action;
+  if (action !== 'install' && action !== 'uninstall') {
+    return sendJson(res, 400, { error: "action 必须是 'install' 或 'uninstall'" });
+  }
+  try {
+    const out = execFileSyncImpl(process.execPath, [tasksCjsPath(), 'watchdog', action], { encoding: 'utf8' });
+    sendJson(res, 200, JSON.parse(String(out).trim()));
+  } catch (err) {
+    sendJson(res, 500, { error: String(err.message) });
   }
 }
 
@@ -826,6 +929,7 @@ function isToday(ftime, today) {
 function deriveOnline(root, hb) {
   if (!fs.existsSync(root) || !fs.existsSync(path.join(root, '.tasks'))) return 'missing';
   if (!hb || !hb.ts) return 'offline';
+  if (hb.stopped === true) return 'offline';   // 面板"停 loop" → 立即离线，不等心跳过 90min 才翻
   const ageMs = Date.now() - new Date(hb.ts).getTime();
   if (ageMs > 90 * 60 * 1000) return 'offline';
   if (hb.phase === 'executing' || ageMs < 5 * 60 * 1000) return 'active';
@@ -856,6 +960,7 @@ async function aggregateProject(entry) {
       currentTaskIds: [],
       currentTask: null,
       lastFinished: null,
+      rounds: 0,
     };
   }
 
@@ -916,6 +1021,7 @@ async function aggregateProject(entry) {
     currentTaskIds,
     currentTask,
     lastFinished,
+    rounds: hb && typeof hb.rounds === 'number' ? hb.rounds : 0,
   };
 }
 
@@ -1149,6 +1255,28 @@ function handle(req, res) {
   const scanM = pathname.match(/^\/api\/projects\/([^/]+)\/scan-now$/);
   if (scanM && req.method === 'POST') {
     handleScanNow(req, res, scanM[1]).catch(err => sendJson(res, 500, { error: String(err.message) }));
+    return;
+  }
+
+  const stopM = pathname.match(/^\/api\/projects\/([^/]+)\/stop$/);
+  if (stopM && req.method === 'POST') {
+    handleStop(req, res, stopM[1]).catch(err => sendJson(res, 500, { error: String(err.message) }));
+    return;
+  }
+
+  const startM = pathname.match(/^\/api\/projects\/([^/]+)\/start$/);
+  if (startM && req.method === 'POST') {
+    handleStart(req, res, startM[1]).catch(err => sendJson(res, 500, { error: String(err.message) }));
+    return;
+  }
+
+  if (pathname === '/api/watchdog' && req.method === 'GET') {
+    handleWatchdogGet(res).catch(err => sendJson(res, 500, { error: String(err.message) }));
+    return;
+  }
+
+  if (pathname === '/api/watchdog' && req.method === 'POST') {
+    handleWatchdogSet(req, res).catch(err => sendJson(res, 500, { error: String(err.message) }));
     return;
   }
 

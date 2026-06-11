@@ -110,6 +110,12 @@ body {
   border-color: var(--accent);
   color: var(--text);
 }
+/* 看门狗开启态：高亮边框 + 主色，与关闭态（灰）一眼区分 */
+.btn-icon.on {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
 .project-item {
   padding: 8px 10px;
   border-radius: 5px;
