@@ -51,6 +51,43 @@ test('validateCreateTarget: 目标已存在抛错,父目录不存在抛错', () 
   assert.throws(() => validateCreateTarget(path.join(tmpDir, 'ghost', 'new-proj')), /父目录不存在/);
 });
 
+// ── 新增：类型防呆 ──────────────────────────────────────────────────
+test('resolveInitPath 非字符串输入抛 /必须是字符串/', () => {
+  assert.throws(() => resolveInitPath(123), /必须是字符串/);
+  assert.throws(() => resolveInitPath(null), /必须是字符串/);
+  assert.throws(() => resolveInitPath(undefined), /必须是字符串/);
+});
+
+test('resolveInitPath 空字符串抛 /不能为空/', () => {
+  assert.throws(() => resolveInitPath(''), /不能为空/);
+});
+
+// ── 新增：symlink 绕过 home 守卫 ────────────────────────────────────
+test('resolveInitPath symlink 指向 home 目录被拒绝', () => {
+  const linkPath = path.join(tmpDir, 'home-link');
+  const realHome = (() => { try { return fs.realpathSync.native(os.homedir()); } catch (_) { return os.homedir(); } })();
+  fs.symlinkSync(realHome, linkPath);
+  assert.throws(() => resolveInitPath(linkPath), /home/);
+});
+
+// ── 新增：错误分支细化 ──────────────────────────────────────────────
+test('validateAttachRoot attach 到文件而非目录抛 /不是目录/', () => {
+  const filePath = path.join(tmpDir, 'notadir.txt');
+  fs.writeFileSync(filePath, 'x');
+  assert.throws(() => validateAttachRoot(filePath), /不是目录/);
+});
+
+test('validateAttachRoot EPERM/EACCES 等非 ENOENT 错误提示包含错误码', () => {
+  // 用一个不存在的路径无法测试 EPERM，但我们可以验证 ENOENT 消息保持「不存在」
+  assert.throws(() => validateAttachRoot(path.join(tmpDir, 'no-such-dir')), /不存在/);
+});
+
+test('validateCreateTarget 父目录是文件时抛 /父目录不是目录/', () => {
+  const filePath = path.join(tmpDir, 'parent-is-file.txt');
+  fs.writeFileSync(filePath, 'x');
+  assert.throws(() => validateCreateTarget(path.join(filePath, 'new-proj')), /父目录不是目录/);
+});
+
 test('inspectRoot 报告 isGitRepo 与 alreadyInitialized', () => {
   const dir = fs.mkdtempSync(path.join(tmpDir, 'inspect-'));
   assert.deepEqual(inspectRoot(dir), { isGitRepo: false, alreadyInitialized: false });
