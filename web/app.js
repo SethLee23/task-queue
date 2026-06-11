@@ -1453,6 +1453,7 @@ function buildFormFromDetect(detect) {
   return {
     scopes,
     sameDayShareVersion: !detect || detect.sameDayShareVersion !== 'likely_false',
+    noPackage: !detect || !detect.packages || detect.packages.length === 0,
   };
 }
 
@@ -1613,6 +1614,11 @@ function renderInitPathPreview(m) {
 /** 向导第二步:逐 scope 的 4 问表单(scope 名/自动 commit、commit 模板、候选模块、同日版本复用)。 */
 function renderInitStep2(modal, m) {
   const f = m.form;
+
+  if (m.tab === 'attach' && f.noPackage) {
+    modal.appendChild(el('div', { className: 'init-notice' },
+      '未探测到 package.json：done 时版本号 bump 将转 review，可后续在 .tasks/project.config.js 手动补 versionFiles。'));
+  }
 
   for (const s of f.scopes) {
     const block = el('div', { className: 'init-scope-block' });

@@ -233,3 +233,22 @@ test('POST /api/init: 路径越界 → 400', async () => {
     { mode: 'attach', root: '/', answers: makeAnswers() });
   assert.equal(r.status, 400);
 });
+
+// ─── Part C: 0.0.0.0 局域网绑定时 Host 白名单不生效 ─────────────────────────
+// startServer({ host: '0.0.0.0' }) 后，请求 Host 为任意域名都应正常通过（200/非 403）。
+// Content-Type 检查仍无条件执行。
+
+test('0.0.0.0 绑定: 伪造 Host 不触发 403', async () => {
+  let inst2;
+  try {
+    inst2 = await startServer({ port: 0, host: '0.0.0.0' });
+    const base = `http://127.0.0.1:${inst2.port}`;
+    const res = await rawRequest(`${base}/api/projects`, {
+      headers: { Host: 'evil.example.com' },
+    });
+    // 未注册任何项目，返回 200 + 空列表（而非 403）
+    assert.equal(res.status, 200);
+  } finally {
+    if (inst2) await inst2.close();
+  }
+});

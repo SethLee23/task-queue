@@ -37,6 +37,14 @@ const {
 
 const WEB_ROOT = path.join(__dirname, '..', 'web');
 
+/**
+ * 服务器当前绑定的 host，由 startServer 在 listen 前赋值。
+ * 用于 handle() 决定是否执行 DNS rebinding 防护：
+ * 绑 loopback（默认）时检查 Host 白名单；
+ * 显式绑 0.0.0.0 或局域网 IP 时跳过检查——用户主动暴露局域网，可用性优先。
+ */
+let boundHost = '127.0.0.1';
+
 /** slug 合法格式：小写字母、数字、连字符 */
 const SLUG_RE = /^[a-z0-9-]+$/;
 
@@ -1173,9 +1181,12 @@ function handle(req, res) {
 
   // 本地面板防护:拒绝非本机 Host(防 DNS rebinding)；POST /api/* 强制 application/json
   // (含空 CT——攻击者可用 fetch(Blob,{type:''}) 发出无 CT 但带 body 的跨站 simple-request 绕过旧规则)。
+  // Host 白名单仅在绑 loopback 时执行；显式绑 0.0.0.0 或局域网 IP 表示用户主动暴露，可用性优先。
   const hostname = (req.headers.host || '').replace(/:\d+$/, '').replace(/^\[|\]$/g, '');
-  if (!['127.0.0.1', 'localhost', '::1'].includes(hostname)) {
-    return sendJson(res, 403, { error: 'forbidden host' });
+  if (['127.0.0.1', 'localhost', '::1'].includes(boundHost)) {
+    if (!['127.0.0.1', 'localhost', '::1'].includes(hostname)) {
+      return sendJson(res, 403, { error: 'forbidden host' });
+    }
   }
   if (req.method === 'POST' && pathname.startsWith('/api/')) {
     const ct = (req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
@@ -1341,6 +1352,7 @@ function handle(req, res) {
  */
 async function startServer({ port = 5732, host = '127.0.0.1' } = {}) {
   const server = http.createServer(handle);
+  boundHost = host;
   await new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(port, host, () => {

@@ -56,7 +56,7 @@ node ~/.claude/skills/task-queue/tasks.cjs detect <project-root>
 
 ### Step 3: 拼装 answers JSON 并调 init-write
 
-收集完答案，构造 answers 对象（结构见 `commands/init-write.cjs` 头部注释），传给：
+收集完答案，构造 answers 对象（结构见 `lib/init-core.cjs` 的 initCore JSDoc），传给：
 
 ```bash
 node ~/.claude/skills/task-queue/tasks.cjs init-write <project-root> '<answers-json>'
