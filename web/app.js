@@ -1398,7 +1398,18 @@ async function submitRegisterOnly() {
   const m = state.initModal;
   if (!m || m.submitting) return;
   m.submitting = true;
-  const r = await postAction('/api/init', { mode: 'register', root: m.root });
+  let r;
+  try {
+    r = await postAction('/api/init', { mode: 'register', root: m.root });
+  } catch (err) {
+    // 网络层异常（fetch reject）兜底,避免 submitting 永久 true 冻结按钮
+    if (state.initModal !== m) return;
+    m.submitting = false;
+    m.error = '网络错误: ' + (err?.message || err);
+    renderInitModal();
+    return;
+  }
+  if (state.initModal !== m) return;
   if (r.ok) {
     closeInitModal();
     await refreshProjects();
@@ -1410,9 +1421,70 @@ async function submitRegisterOnly() {
   }
 }
 
-/** 占位:Task 9 实现 detect → 第二步表单 state 的转换。 */
-function buildFormFromDetect(_detect) {
-  return null;
+/**
+ * 从 detect 结果构建第二步表单 state。
+ * packages 为空(从零新建/无 package.json)时用空项目默认值:
+ * scope=main, dir='.', versionFile='package.json', 模块=['全局']。
+ */
+function buildFormFromDetect(detect) {
+  const pkgs = (detect && detect.packages && detect.packages.length > 0)
+    ? detect.packages
+    : [{ dir: '.', version: '0.1.0', versionFile: 'package.json',
+         buildCommand: '', changelogFile: null, candidateModules: [] }];
+  const seen = new Set();
+  const scopes = pkgs.map(pkg => {
+    let scope = defaultScopeName(pkg.dir);
+    while (seen.has(scope)) scope = scope + '2';
+    seen.add(scope);
+    return {
+      scope,
+      dir: pkg.dir,
+      version: pkg.version || '1.0.0',
+      versionFile: pkg.versionFile || (pkg.dir === '.' ? 'package.json' : pkg.dir + '/package.json'),
+      buildCommand: pkg.buildCommand || '',
+      changelogFile: pkg.changelogFile || '',
+      autoCommit: scope === 'web',   // CLI 流程推荐:仅 web 类 scope 自动 commit
+      template: defaultCommitTemplate(scope),
+      // buildTagInput 内部会替换 form.tags 引用,所以保留包装对象,提交时读 _chipForm.tags
+      _chipForm: { tags: (pkg.candidateModules && pkg.candidateModules.length > 0)
+        ? [...pkg.candidateModules] : ['全局'] },
+    };
+  });
+  return {
+    scopes,
+    sameDayShareVersion: !detect || detect.sameDayShareVersion !== 'likely_false',
+  };
+}
+
+/** 目录名 → 默认 scope 名(根目录用 main,其余取末段并清洗为 [a-z0-9-])。 */
+function defaultScopeName(dir) {
+  if (dir === '.') return 'main';
+  const base = dir.split('/').pop().toLowerCase().replace(/[^a-z0-9-]/g, '-');
+  return base || 'main';
+}
+
+/** 默认 commit 模板。护栏:T#0000 字面量;subject 行不放 {desc}/{summary}。 */
+function defaultCommitTemplate(scope) {
+  return `T#0000 ${scope}## {version}\n\n【{module}】{desc}；`;
+}
+
+/** 渲染模板示例预览(与 project.config.js commitMessage 的占位符一致)。 */
+function renderTemplateExample(s) {
+  return s.template
+    .replace('{version}', s.version)
+    .replace('{module}', s._chipForm.tags[0] || '全局')
+    .replace('{desc}', '修复登录跳转')
+    .replace('{summary}', '');
+}
+
+/** commit 模板护栏检查,返回警告文案或空串(只警告,不阻止提交)。 */
+function templateWarning(tpl) {
+  const subject = String(tpl).split('\n')[0];
+  if (tpl.includes('T#{id}')) return '请保持 T#0000 字面量，不要参数化成 T#{id}';
+  if (subject.includes('{desc}') || subject.includes('{summary}')) {
+    return 'subject 行不应包含 {desc}/{summary}——那是 git log --oneline 看到的位置';
+  }
+  return '';
 }
 
 function renderInitModal() {
@@ -1432,7 +1504,7 @@ function renderInitModal() {
   if (m.step === 1) {
     renderInitStep1(modal, m);
   } else {
-    modal.appendChild(el('div', { className: 'modal-label' }, '(第二步 Task 9 实现)'));
+    renderInitStep2(modal, m);
   }
 
   if (m.error) modal.appendChild(el('div', { className: 'modal-error' }, m.error));
@@ -1534,6 +1606,129 @@ function initPathPreviewText(m) {
 function renderInitPathPreview(m) {
   const box = document.getElementById('init-path-preview');
   if (box) box.textContent = initPathPreviewText(m);
+}
+
+/** 向导第二步:逐 scope 的 4 问表单(scope 名/自动 commit、commit 模板、候选模块、同日版本复用)。 */
+function renderInitStep2(modal, m) {
+  const f = m.form;
+
+  for (const s of f.scopes) {
+    const block = el('div', { className: 'init-scope-block' });
+    block.appendChild(el('div', { className: 'init-scope-title' }, `目录 ${s.dir}`));
+
+    // scope 名(可编辑) + 自动 commit checkbox
+    const scopeInput = el('input', {
+      className: 'modal-input', type: 'text',
+      autocomplete: 'off', autocorrect: 'off', autocapitalize: 'off', spellcheck: 'false',
+    });
+    scopeInput.value = s.scope;
+    bindImeSafeInput(scopeInput, v => { s.scope = v.trim(); });
+    const autoCommitBox = el('input', { type: 'checkbox' });
+    autoCommitBox.checked = s.autoCommit;
+    autoCommitBox.addEventListener('change', () => { s.autoCommit = autoCommitBox.checked; });
+    block.appendChild(el('div', { className: 'modal-row' },
+      el('label', { className: 'modal-label' }, 'scope 名', scopeInput),
+      el('label', { className: 'modal-label init-autocommit' }, autoCommitBox, ' 完成任务后自动 commit'),
+    ));
+
+    // commit 模板 + 实时预览 + 护栏警告(只警告不阻止)
+    const previewBox = el('div', { className: 'tpl-preview' }, renderTemplateExample(s));
+    const warnBox = el('div', { className: 'tpl-warning' }, templateWarning(s.template));
+    const tplArea = el('textarea', { className: 'modal-input', rows: 3, spellcheck: 'false' });
+    tplArea.value = s.template;
+    bindImeSafeInput(tplArea, v => {
+      s.template = v;
+      previewBox.textContent = renderTemplateExample(s);
+      warnBox.textContent = templateWarning(s.template);
+    });
+    block.appendChild(el('label', { className: 'modal-label' }, 'commit 模板', tplArea));
+    block.appendChild(previewBox);
+    block.appendChild(warnBox);
+
+    // 候选模块 chip-input(复用现有控件,无补全候选)
+    block.appendChild(el('label', { className: 'modal-label' }, '候选模块'));
+    block.appendChild(buildTagInput(s._chipForm, []));
+    modal.appendChild(block);
+  }
+
+  // 同日版本号复用
+  const sameDayBox = el('input', { type: 'checkbox' });
+  sameDayBox.checked = f.sameDayShareVersion;
+  sameDayBox.addEventListener('change', () => { f.sameDayShareVersion = sameDayBox.checked; });
+  modal.appendChild(el('label', { className: 'modal-label init-sameday' },
+    sameDayBox, ' 同一天多次提交复用同一个版本号'));
+
+  // 非 git 仓库的 git init 选项(attach 才出现;create 由后端恒 git init)
+  if (m.tab === 'attach' && !m.isGitRepo) {
+    const gitInitBox = el('input', { type: 'checkbox' });
+    gitInitBox.checked = m.gitInit;
+    gitInitBox.addEventListener('change', () => { m.gitInit = gitInitBox.checked; });
+    modal.appendChild(el('label', { className: 'modal-label init-gitinit' },
+      gitInitBox, ' 该目录不是 git 仓库，同时执行 git init（不勾则任务的 commit 流程不可用）'));
+  }
+
+  modal.appendChild(el('div', { className: 'modal-actions' },
+    el('button', { className: 'btn', onclick: () => { m.step = 1; m.error = ''; renderInitModal(); } }, '上一步'),
+    el('button', {
+      className: 'btn primary', disabled: m.submitting, onclick: submitInitModal,
+    }, m.submitting ? '创建中…' : (m.tab === 'create' ? '创建并初始化' : '接入')),
+  ));
+}
+
+/** 第二步提交:表单 state → answers → POST /api/init,成功后刷新并选中新项目。 */
+async function submitInitModal() {
+  const m = state.initModal;
+  if (!m || m.submitting) return;
+  // scope 名校验:非空 + 不重名
+  const names = m.form.scopes.map(s => s.scope);
+  if (names.some(n => !n)) { m.error = 'scope 名不能为空'; renderInitModal(); return; }
+  if (new Set(names).size !== names.length) { m.error = 'scope 名不能重复'; renderInitModal(); return; }
+
+  const answers = {
+    autoCommitScopes: m.form.scopes.filter(s => s.autoCommit).map(s => s.scope),
+    scopeMapping: {},
+    candidateModules: {},
+    commitTemplate: {},
+    sameDayShareVersion: m.form.sameDayShareVersion,
+  };
+  for (const s of m.form.scopes) {
+    answers.scopeMapping[s.scope] = {
+      dir: s.dir, versionFile: s.versionFile,
+      changelogFile: s.changelogFile, buildCommand: s.buildCommand,
+    };
+    answers.candidateModules[s.scope] = s._chipForm.tags.length > 0 ? s._chipForm.tags : ['全局'];
+    answers.commitTemplate[s.scope] = s.template;
+  }
+
+  m.submitting = true; m.error = ''; renderInitModal();
+  let r;
+  try {
+    r = await postAction('/api/init', {
+      mode: m.tab, root: m.root, gitInit: m.gitInit, answers,
+    });
+  } catch (err) {
+    // 网络层异常（fetch reject）兜底
+    if (state.initModal !== m) return;
+    m.submitting = false;
+    m.error = '网络错误: ' + (err?.message || err);
+    renderInitModal();
+    return;
+  }
+  // 过期响应回收守卫(提交期间 modal 被关闭/重开)
+  if (state.initModal !== m) return;
+  m.submitting = false;
+  if (r.ok) {
+    if (m.tab === 'create' && m.parentDir.trim()) {
+      localStorage.setItem(INIT_PARENT_KEY, m.parentDir.trim());
+    }
+    closeInitModal();
+    if (r.body.warning) showToast(r.body.warning, 'info', 8000);
+    await refreshProjects();
+    selectProject(r.body.slug);
+  } else {
+    m.error = r.body?.error || `失败 (${r.status})`;
+    renderInitModal();
+  }
 }
 
 function renderAddModal() {
