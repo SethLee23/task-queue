@@ -203,7 +203,10 @@ test('runInit: git commit 失败时不回滚,返回 warning', async () => {
   const root = fs.mkdtempSync(path.join(tmpDir, 'run-fail-'));
   execFileSync('git', ['init', '-q'], { cwd: root });
   // 注入必败 hook:pre-commit 直接 exit 1
+  // 钉死 hooksPath 到仓库本地，防止开发机全局 core.hooksPath / init.templateDir 干扰
   const hookDir = path.join(root, '.git', 'hooks');
+  fs.mkdirSync(hookDir, { recursive: true });
+  execFileSync('git', ['config', 'core.hooksPath', '.git/hooks'], { cwd: root });
   fs.writeFileSync(path.join(hookDir, 'pre-commit'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
 
   const result = await runInit({ mode: 'attach', root, gitInit: false, answers: makeAnswers() });
@@ -222,4 +225,42 @@ test('registerOnly: 只注册不动配置', async () => {
   assert.ok(entry.slug);
   // 配置原样未动
   assert.match(fs.readFileSync(path.join(root, '.tasks', 'project.config.js'), 'utf8'), /marker: 1/);
+});
+
+// ── #2 负向：registerOnly 无 .tasks/ 时应抛「未接入过」────────────────
+test('registerOnly: 无 .tasks/project.config.js 的目录抛 /未接入过/', () => {
+  const root = fs.mkdtempSync(path.join(tmpDir, 'reg-only-noconfig-'));
+  // 目录存在但没有 .tasks/
+  assert.throws(() => registerOnly(root), /未接入过/);
+});
+
+// ── #4 子目录 attach 全链路锁定 ──────────────────────────────────────
+test('runInit attach 到已有仓库子目录: commit 落在父仓库,只含子目录 .gitignore', async () => {
+  const repo = fs.mkdtempSync(path.join(tmpDir, 'subrepo-'));
+  execFileSync('git', ['init', '-q'], { cwd: repo });
+  gitConfigTestUser(repo);
+
+  const subDir = path.join(repo, 'packages', 'web');
+  fs.mkdirSync(subDir, { recursive: true });
+
+  const result = await runInit({ mode: 'attach', root: subDir, gitInit: false, answers: makeAnswers() });
+
+  // 接入成功
+  assert.ok(result.slug);
+  assert.equal(result.committed, true);
+  assert.equal(result.warning, null);
+
+  // commit 落在父仓库
+  const subject = execFileSync('git', ['log', '-1', '--pretty=%s'], { cwd: repo, encoding: 'utf8' }).trim();
+  assert.equal(subject, 'task-queue: 接入任务队列（ignore .tasks/）');
+
+  // commit 只包含 packages/web/.gitignore（相对 repo 根的路径）
+  const files = execFileSync(
+    'git', ['show', '--name-only', '--pretty=format:', 'HEAD'],
+    { cwd: repo, encoding: 'utf8' },
+  ).trim().split('\n');
+  assert.deepEqual(files, ['packages/web/.gitignore']);
+
+  // 子目录没有自己的 .git
+  assert.ok(!fs.existsSync(path.join(subDir, '.git')));
 });
