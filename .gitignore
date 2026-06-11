@@ -2,3 +2,6 @@ node_modules/
 tests/fixtures/*.xlsx
 tests/fixtures/tmp-*
 .DS_Store
+
+# task-queue 在 .claude/worktrees/ 下建并行执行 worktree,绝不入库
+.claude/
